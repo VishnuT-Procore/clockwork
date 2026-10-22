@@ -2,14 +2,48 @@
 name = "deploytrain"
 version = "0.1.0"
 description = "Region-by-region production deployment train with configurable time windows"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Vishnuvardhan", email = "vishnuvardhan.777@gmail.com" }]
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6"]
+dependencies = [
+    "PyYAML>=6",
+    "tzdata; sys_platform == 'win32'",  # Windows has no system timezone database
+]
+keywords = ["deployment", "release", "rollout", "progressive-delivery", "devops", "sre", "change-window"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Systems Administration",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/VishnuT-Procore/clockwork"
+Source = "https://github.com/VishnuT-Procore/clockwork"
+Issues = "https://github.com/VishnuT-Procore/clockwork/issues"
+Changelog = "https://github.com/VishnuT-Procore/clockwork/blob/main/CHANGELOG.md"
 
 [project.scripts]
 deploytrain = "deploytrain.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -17,3 +51,6 @@ packages = ["deploytrain"]
 
 [tool.setuptools.package-data]
 deploytrain = ["ui/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

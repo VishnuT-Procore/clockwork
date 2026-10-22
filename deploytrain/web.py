@@ -6,6 +6,7 @@ be restarted at any time without affecting running trains.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -309,7 +310,8 @@ def make_handler(app: App):
         def _authorized(self) -> bool:
             if not app.token:
                 return True
-            return self.headers.get("Authorization") == f"Bearer {app.token}"
+            supplied = self.headers.get("Authorization") or ""
+            return hmac.compare_digest(supplied.encode(), f"Bearer {app.token}".encode())
 
         def _api(self, fn) -> None:
             if not self._authorized():

@@ -1,5 +1,9 @@
 # deploytrain
 
+[![CI](https://github.com/VishnuT-Procore/clockwork/actions/workflows/ci.yml/badge.svg)](https://github.com/VishnuT-Procore/clockwork/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+
 Rolls a release out region by region in **waves**. Each region deploys only inside its own
 **time window**, which is timezone-aware, supports overnight windows and blackouts, and
 can require a minimum amount of window left before a deploy starts. After each deploy the
@@ -8,8 +12,37 @@ train **bakes** the region and runs health checks, and it **rolls back** and sto
 deploytrain does not deploy anything itself. You supply shell commands (helm, kubectl,
 terraform, CodeDeploy, etc.), and deploytrain decides *when* and *where* to run them.
 
+![deploytrain web UI: a release rolling out wave by wave, one region baking and one waiting for its window](docs/screenshot.png)
+
+## Features
+
+- **Waves:** canary first, then progressively larger groups of regions, with
+  `max_parallel` regions at a time within a wave.
+- **Time windows per region:** e.g. "Mon–Thu 09:00–16:00 Europe/Dublin". DST is handled,
+  windows can cross midnight, and global or per-region blackouts are supported (holiday
+  freezes, launch days).
+- **Bake and health checks:** after each deploy the region bakes while health checks run.
+  On failure the train rolls back (the region, the wave or the whole train) and stops.
+- **Approval gates:** a wave can wait for a human to approve it before deploying.
+- **Resumable:** the train survives crashes and restarts. Re-run the same command to
+  continue, or retry just the failed regions.
+- **Slack:** one live-updating message per train, with details in its thread and a
+  mention on failures.
+- **Web UI:** see status, start runs, approve, abort and retry, with an audit trail of who
+  did what.
+- **Small:** one runtime dependency (PyYAML). The UI has no build step and needs no CDN.
+
+## Install
+
+Requires Python 3.10+, on Linux or macOS.
+
 ```
-pip install -e .
+pip install "git+https://github.com/VishnuT-Procore/clockwork"
+```
+
+## Quick start
+
+```
 deploytrain -c examples/train.yaml plan                 # projected schedule per region
 deploytrain -c examples/train.yaml windows              # upcoming open windows
 deploytrain -c examples/train.yaml run --version v1.4.0 --previous-version v1.3.2
@@ -148,8 +181,16 @@ Alternatively, run it on a schedule (cron or a scheduled pipeline) with a short
 `window_wait_timeout`. Each invocation then resumes and advances as far as the currently
 open windows allow.
 
-## Tests
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development setup, and our [Code of Conduct](CODE_OF_CONDUCT.md). To report a security
+issue, please follow [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
 ```
-pip install pytest && python -m pytest
+pip install -e ".[dev]" && python -m pytest
 ```
+
+## License
+
+[Apache License 2.0](LICENSE). Copyright 2026 Vishnuvardhan.
