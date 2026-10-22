@@ -6,9 +6,11 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from . import config as config_mod
+from .notify import Notifier, SlackNotifier, build_notifier
 from .train import SUCCEEDED, Train, abort_path, plan, state_path
 from .windows import format_duration, parse_duration
 
@@ -59,7 +61,8 @@ def cmd_windows(args, cfg) -> int:
 
 
 def cmd_run(args, cfg) -> int:
-    train = Train(cfg, args.version, args.previous_version, dry_run=args.dry_run)
+    notifier = Notifier() if args.no_notify else None
+    train = Train(cfg, args.version, args.previous_version, dry_run=args.dry_run, notifier=notifier)
     status = train.run(retry_failed=args.retry_failed)
     print(f"\ntrain status: {status}")
     return 0 if status == SUCCEEDED else 1
@@ -93,6 +96,27 @@ def cmd_abort(args, cfg) -> int:
     return 0
 
 
+def cmd_notify_test(args, cfg) -> int:
+    if cfg.slack is None:
+        print("no notifications.slack section in config", file=sys.stderr)
+        return 1
+    notifier = build_notifier(cfg.slack)
+    if not isinstance(notifier, SlackNotifier):
+        print("slack credentials not found in environment (see warning above)", file=sys.stderr)
+        return 1
+    # A throwaway in-memory train so nothing touches real state files.
+    probe = SimpleNamespace(cfg=cfg, state=SimpleNamespace(save=lambda: None, data={
+        "train": cfg.name, "version": "notify-test", "previous_version": None, "status": "succeeded",
+        "regions": {r.name: {"status": "pending"} for r in cfg.regions},
+    }))
+    notifier.attach(probe)
+    notifier.notify("train_finished", status="succeeded",
+                    message=f"Slack integration test from deploytrain ({cfg.name})")
+    mode = f"bot token -> {cfg.slack.channel}" if notifier.bot_mode else "incoming webhook"
+    print(f"sent test message via {mode}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="deploytrain", description="Region-by-region deployment train")
     p.add_argument("-c", "--config", default="train.yaml")
@@ -116,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--previous-version", help="version to roll back to on failure")
     sp.add_argument("--dry-run", action="store_true", help="print commands, respect windows, skip bake")
     sp.add_argument("--retry-failed", action="store_true", help="retry regions that failed last run")
+    sp.add_argument("--no-notify", action="store_true", help="don't send Slack notifications")
     sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("status", help="show train progress")
@@ -128,6 +153,9 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--version", required=True)
     sp.set_defaults(func=cmd_abort)
 
+    sp = sub.add_parser("notify-test", help="send a test Slack message")
+    sp.set_defaults(func=cmd_notify_test)
+
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
@@ -138,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args, cfg)
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 

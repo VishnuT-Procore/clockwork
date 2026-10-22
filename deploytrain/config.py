@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from .notify import SlackSettings
 from .windows import Blackout, WindowProfile, parse_duration
 
 ALWAYS_OPEN = "always"
@@ -49,6 +50,7 @@ class TrainConfig:
     windows: dict[str, WindowProfile]
     waves: list[Wave]
     state_dir: Path
+    slack: SlackSettings | None = None
 
     @property
     def regions(self) -> list[Region]:
@@ -116,6 +118,12 @@ def from_dict(raw: dict, base_dir: Path = Path(".")) -> TrainConfig:
     if scope not in ROLLBACK_SCOPES:
         raise ConfigError(f"rollback_scope must be one of {ROLLBACK_SCOPES}")
 
+    slack_raw = (raw.get("notifications") or {}).get("slack")
+    try:
+        slack = SlackSettings.from_config(slack_raw) if slack_raw is not None else None
+    except ValueError as e:
+        raise ConfigError(str(e))
+
     return TrainConfig(
         name=t["name"],
         deploy_command=t["deploy_command"],
@@ -128,4 +136,5 @@ def from_dict(raw: dict, base_dir: Path = Path(".")) -> TrainConfig:
         windows=windows,
         waves=waves,
         state_dir=(base_dir / t.get("state_dir", ".deploytrain")).resolve(),
+        slack=slack,
     )

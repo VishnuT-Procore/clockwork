@@ -15,6 +15,7 @@ from typing import Callable, Protocol
 from zoneinfo import ZoneInfo
 
 from .config import Region, TrainConfig, Wave
+from .notify import Notifier, build_notifier
 from .windows import NoWindowError, format_duration
 
 log = logging.getLogger("deploytrain")
@@ -63,7 +64,9 @@ class AbortRequested(Exception):
 
 
 class RegionFailed(Exception):
-    pass
+    def __init__(self, message: str, output: str = ""):
+        super().__init__(message)
+        self.output = output
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -119,7 +122,7 @@ def abort_path(cfg: TrainConfig, version: str) -> Path:
 class Train:
     def __init__(self, cfg: TrainConfig, version: str, previous_version: str | None = None,
                  runner: Runner = shell_runner, clock: Clock | None = None,
-                 dry_run: bool = False):
+                 dry_run: bool = False, notifier: Notifier | None = None):
         self.cfg = cfg
         self.version = version
         self.previous_version = previous_version
@@ -129,6 +132,17 @@ class Train:
         self.state = StateStore(state_path(cfg, version))
         self.abort_file = abort_path(cfg, version)
         self._halt = threading.Event()
+        if notifier is None:
+            notifier = Notifier() if dry_run else build_notifier(cfg.slack)
+        self.notifier = notifier
+        self.notifier.attach(self)
+
+    def _notify(self, event: str, **ctx) -> None:
+        # Notifications must never break a deploy.
+        try:
+            self.notifier.notify(event, **ctx)
+        except Exception as e:  # noqa: BLE001
+            log.warning("notification %s failed: %s", event, e)
 
     # ---- state -------------------------------------------------------------
 
@@ -151,6 +165,7 @@ class Train:
             self.previous_version = st.get("previous_version")
             st["status"] = RUNNING
             self.state.event(now, "resuming train")
+            self._notify("train_resumed")
             return
         self.state.data = {
             "train": self.cfg.name,
@@ -166,11 +181,13 @@ class Train:
             "events": [],
         }
         self.state.event(now, f"train {self.cfg.name} started for version {self.version}")
+        self._notify("train_started")
 
     def _finish(self, status: str, message: str) -> str:
         self.state.data["status"] = status
         self.state.data["finished_at"] = _iso(self.clock.now())
         self.state.event(self.clock.now(), message)
+        self._notify("train_finished", status=status, message=message)
         return status
 
     # ---- helpers -----------------------------------------------------------
@@ -240,6 +257,7 @@ class Train:
                        f"{local:%a %Y-%m-%d %H:%M %Z} (in {format_duration(nxt - now)})")
                 self.state.update_region(region.name, status=WAITING, message=msg)
                 self.state.event(now, msg, region.name)
+                self._notify("region_waiting", region=region.name, message=msg, opens_at=nxt)
             self._sleep(min((nxt - now).total_seconds(), 300))
 
     def _bake(self, region: Region) -> None:
@@ -254,7 +272,7 @@ class Train:
                 res = self._run("health check", cfg.health_check_command, region,
                                 HEALTH_CHECK_TIMEOUT)
                 if res.returncode != 0:
-                    raise RegionFailed(f"health check failed (exit {res.returncode})")
+                    raise RegionFailed(f"health check failed (exit {res.returncode})", res.output)
             remaining = (deadline - self.clock.now()).total_seconds()
             if remaining <= 0 or self.dry_run:
                 return
@@ -271,6 +289,7 @@ class Train:
         status = ROLLED_BACK if res.returncode == 0 else ROLLBACK_FAILED
         self.state.update_region(region.name, status=status,
                                  message=f"{reason}; rollback {'ok' if res.returncode == 0 else 'FAILED'}")
+        self._notify("region_rolled_back", region=region.name, ok=res.returncode == 0)
 
     def _deploy_region(self, region: Region) -> str:
         name = region.name
@@ -278,14 +297,16 @@ class Train:
             self._wait_for_window(region)
             self.state.update_region(name, status=DEPLOYING, started_at=_iso(self.clock.now()),
                                      message=f"deploying {self.version}")
+            self._notify("region_deploying", region=name)
             res = self._run("deploy", self.cfg.deploy_command, region, region.deploy_timeout)
             if res.returncode != 0:
-                raise RegionFailed(f"deploy failed (exit {res.returncode})")
+                raise RegionFailed(f"deploy failed (exit {res.returncode})", res.output)
             self._check_abort()
             self._bake(region)
             self.state.update_region(name, status=SUCCEEDED, finished_at=_iso(self.clock.now()),
                                      message=f"{self.version} healthy")
             self.state.event(self.clock.now(), "succeeded", name)
+            self._notify("region_succeeded", region=name)
             return SUCCEEDED
         except AbortRequested:
             st = self.state.region(name)["status"]
@@ -299,6 +320,7 @@ class Train:
             self.state.update_region(name, status=FAILED, finished_at=_iso(self.clock.now()),
                                      message=str(e))
             self.state.event(self.clock.now(), f"FAILED: {e}", name)
+            self._notify("region_failed", region=name, error=str(e), output=e.output.strip())
             if self.cfg.rollback_scope != "none":
                 self._rollback(region, str(e))
             return FAILED
@@ -311,6 +333,7 @@ class Train:
             return []
         self.state.event(self.clock.now(), f"wave {wave.name!r} starting: "
                          f"{', '.join(r.name for r in todo)} (max_parallel={wave.max_parallel})")
+        self._notify("wave_started", wave=wave.name, regions=[r.name for r in todo])
         if wave.max_parallel == 1:
             return [self._deploy_region(r) for r in todo]
         with ThreadPoolExecutor(max_workers=wave.max_parallel,
@@ -354,6 +377,7 @@ class Train:
                 if results or not self.state.data["waves"][wave.name]["finished_at"]:
                     self.state.data["waves"][wave.name]["finished_at"] = _iso(self.clock.now())
                     self.state.event(self.clock.now(), f"wave {wave.name!r} complete")
+                    self._notify("wave_completed", wave=wave.name)
         except AbortRequested:
             return self._finish(ABORTED, "train aborted; re-run the same command to resume")
         return self._finish(SUCCEEDED, f"train complete: {self.version} is live in all regions")

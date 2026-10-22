@@ -55,6 +55,41 @@ Commands are templates using `{train} {region} {wave} {version} {previous_versio
 any region `vars`. The same values are exported as env vars (`DT_REGION`, `DT_CLUSTER`, …).
 Escape literal braces as `{{ }}`.
 
+## Slack notifications
+
+```yaml
+notifications:
+  slack:
+    channel: "#deploys"             # bot mode needs a channel plus $SLACK_BOT_TOKEN
+    token_env: SLACK_BOT_TOKEN      # default
+    webhook_url_env: SLACK_WEBHOOK_URL  # default; used when no bot token is set
+    mention_on_failure: "<!here>"   # or "<!subteam^S0123ABCD>" / "<@U0123ABCD>"
+    events: [...]                   # optional filter, see below
+```
+
+**Bot mode (recommended).** Create a Slack app with the `chat:write` scope, install it,
+invite it to the channel and export `SLACK_BOT_TOKEN`.
+- Each train gets **one message in the channel**. It is edited live with a per-wave status
+  board, e.g. `canary ✅ us-west-2 · wave-2 ⏳ eu-west-1 🚀 us-east-1`.
+- Every event is posted as a **reply in that message's thread**.
+- Failures and the final result are also broadcast to the channel.
+- If you resume the train, updates go to the same thread.
+
+**Webhook mode.** Export `SLACK_WEBHOOK_URL` (an incoming webhook). Each event is posted as
+its own message.
+
+The available events are `train_started`, `train_resumed`, `train_finished`, `wave_started`,
+`wave_completed`, `region_waiting`, `region_deploying`, `region_succeeded`, `region_failed`
+and `region_rolled_back`. All are sent by default except `region_deploying`. Failure
+messages include the last part of the failing command's output, plus the
+`mention_on_failure` mention.
+
+**If Slack is unavailable.** A Slack error or a missing credential is logged as a warning
+and never stops a deploy.
+- `deploytrain notify-test` sends a test message so you can check the setup.
+- `run --no-notify` turns notifications off for one run.
+- Notifications are always off in `--dry-run`.
+
 ## Running it in CI
 
 A train can run for days while it waits for windows, so run it as a long-lived job, such
