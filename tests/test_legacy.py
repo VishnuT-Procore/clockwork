@@ -115,9 +115,10 @@ def test_legacy_cli_command_names(tmp_path, capsys, old, new):
     import yaml
     path.write_text(yaml.safe_dump({**LEGACY_RAW, "train": {**LEGACY_RAW["train"],
                                                             "state_dir": str(tmp_path)}}))
-    assert cli.main(["-c", str(path), old]) == 0
+    at = ["--at", "2026-10-22T12:00"]  # fixed, so both runs compute the same schedule
+    assert cli.main(["-c", str(path), old, *at]) == 0
     old_out = capsys.readouterr().out
-    assert cli.main(["-c", str(path), new]) == 0
+    assert cli.main(["-c", str(path), new, *at]) == 0
     assert capsys.readouterr().out.splitlines()[2:] == old_out.splitlines()[2:]
 
 
