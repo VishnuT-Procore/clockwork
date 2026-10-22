@@ -11,36 +11,36 @@ import pytest
 from deploytrain import config
 from deploytrain.notify import Notifier
 from deploytrain.train import (
-    AWAITING_APPROVAL, SUCCEEDED, Train, approval_path, request_approval, state_path,
+    AT_SIGNAL, SUCCEEDED, Train, clear_signal, signal_path, state_path,
 )
 from deploytrain.web import App, make_handler
 
 from test_deploytrain import FakeClock, FakeRunner, dt, make_cfg
 
 
-# ---- approval gates ----------------------------------------------------------
+# ---- signals ----------------------------------------------------------
 
-class ApprovingClock(FakeClock):
-    """Approves the wave the first time the train sleeps while awaiting approval."""
+class SignallerClock(FakeClock):
+    """Clears the signal the first time the train sleeps while at a signal."""
 
-    def __init__(self, start, train_ref, wave):
+    def __init__(self, start, train_ref, stop):
         super().__init__(start)
-        self.train_ref, self.wave = train_ref, wave
+        self.train_ref, self.stop = train_ref, stop
         self.seen_status = None
 
     def sleep(self, seconds):
         train = self.train_ref[0]
-        if train and train.state.data.get("status") == AWAITING_APPROVAL and self.seen_status is None:
-            self.seen_status = AWAITING_APPROVAL
-            request_approval(train.cfg, train.version, self.wave, "alice")
+        if train and train.state.data.get("status") == AT_SIGNAL and self.seen_status is None:
+            self.seen_status = AT_SIGNAL
+            clear_signal(train.cfg, train.version, self.stop, "alice")
         super().sleep(seconds)
 
 
-def test_wave_waits_for_approval(tmp_path):
+def test_stop_waits_at_signal(tmp_path):
     cfg = make_cfg(tmp_path)
-    cfg.waves[1].approval = True
+    cfg.stops[1].signal = True
     ref = [None]
-    clock = ApprovingClock(dt("2026-10-26T14:00"), ref, "w1")
+    clock = SignallerClock(dt("2026-10-26T14:00"), ref, "s1")
     events = []
 
     class Rec(Notifier):
@@ -51,15 +51,15 @@ def test_wave_waits_for_approval(tmp_path):
     train = Train(cfg, "v2", "v1", runner=runner, clock=clock, notifier=Rec())
     ref[0] = train
     assert train.run() == SUCCEEDED
-    assert clock.seen_status == AWAITING_APPROVAL
-    approval = train.state.data["waves"]["w1"]["approval"]
-    assert approval["status"] == "approved" and approval["by"] == "alice"
-    assert not approval_path(cfg, "v2", "w1").exists()
+    assert clock.seen_status == AT_SIGNAL
+    signal = train.state.data["stops"]["s1"]["signal"]
+    assert signal["status"] == "cleared" and signal["cleared_by"] == "alice"
+    assert not signal_path(cfg, "v2", "s1").exists()
     names = [e for e, _ in events]
-    assert names.index("wave_awaiting_approval") < names.index("wave_approved") < names.index("wave_started", 2)
-    # Nothing in w1 deployed before the approval.
-    approved_at = next(t for t, c in runner.calls if c == "deploy us-east v2")
-    assert approved_at >= dt(approval["approved_at"].replace("+00:00", ""))
+    assert names.index("stop_at_signal") < names.index("signal_cleared") < names.index("stop_started", 2)
+    # Nothing at s1 deployed before the signal was cleared.
+    deployed_at = next(t for t, c in runner.calls if c == "deploy us-east v2")
+    assert deployed_at >= dt(signal["cleared_at"].replace("+00:00", ""))
 
 
 def test_running_train_cannot_be_started_twice(tmp_path):
@@ -67,37 +67,37 @@ def test_running_train_cannot_be_started_twice(tmp_path):
     path = state_path(cfg, "v2")
     path.parent.mkdir(parents=True)
     import socket
-    path.write_text(json.dumps({"status": "running", "pid": os.getppid(), "host": socket.gethostname(),
-                                "regions": {}, "train": "svc", "version": "v2"}))
-    with pytest.raises(RuntimeError, match="already running"):
+    path.write_text(json.dumps({"status": "en_route", "pid": os.getppid(), "host": socket.gethostname(),
+                                "platforms": {}, "train": "svc", "version": "v2"}))
+    with pytest.raises(RuntimeError, match="already en route"):
         Train(cfg, "v2", runner=FakeRunner(FakeClock(dt("2026-10-26T14:00")))).run()
 
 
 # ---- HTTP API ----------------------------------------------------------------
 
-def write_cfg(tmp_path, approval=False):
+def write_cfg(tmp_path, signal=False):
     (tmp_path / "train.yaml").write_text(f"""
 train:
   name: webdemo
-  deploy_command: "echo deploy {{region}} {{version}}"
-  health_check_command: "true"
-  rollback_command: "echo rollback {{region}}"
-  health_check_interval: 1s
-  default_bake: 0s
-waves:
+  deploy_command: "echo deploy {{platform}} {{version}}"
+  inspection_command: "true"
+  rollback_command: "echo rollback {{platform}}"
+  inspection_interval: 1s
+  default_dwell: 0s
+stops:
   - name: canary
-    regions: [r1]
+    platforms: [r1]
   - name: rest
-    approval: {str(approval).lower()}
-    regions: [r2, r3]
+    signal: {str(signal).lower()}
+    platforms: [r2, r3]
 """)
     return tmp_path / "train.yaml"
 
 
 @pytest.fixture
 def server(tmp_path, request):
-    approval = getattr(request, "param", False)
-    path = write_cfg(tmp_path, approval)
+    signal = getattr(request, "param", False)
+    path = write_cfg(tmp_path, signal)
     cfg = config.load(path)
     app = App(cfg, str(path), token="s3cret")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
@@ -127,7 +127,7 @@ def call(base, path, body=None, token="s3cret", user="bob", csrf=True):
 def wait_for(base, version, pred, timeout=20):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        code, run = call(base, f"/api/run?version={version}")
+        code, run = call(base, f"/api/departure?version={version}")
         if code == 200 and pred(run):
             return run
         time.sleep(0.2)
@@ -142,61 +142,75 @@ def no_proxy(monkeypatch):
 
 def test_auth_and_csrf(server):
     base, _ = server
-    assert call(base, "/api/runs", token=None)[0] == 401
-    assert call(base, "/api/runs", token="wrong")[0] == 401
-    assert call(base, "/api/runs") == (200, [])
-    assert call(base, "/api/runs/start", {"version": "v1"}, csrf=False)[0] == 403
-    assert call(base, "/api/runs/start", {"version": "../etc"})[0] == 400
+    assert call(base, "/api/departures", token=None)[0] == 401
+    assert call(base, "/api/departures", token="wrong")[0] == 401
+    assert call(base, "/api/departures") == (200, [])
+    assert call(base, "/api/departures/depart", {"version": "v1"}, csrf=False)[0] == 403
+    assert call(base, "/api/departures/depart", {"version": "../etc"})[0] == 400
     with urllib.request.urlopen(base + "/") as r:
         assert b"Deploy Train" in r.read()
 
 
-def test_config_and_plan(server):
+def test_config_and_timetable(server):
     base, _ = server
     code, cfg = call(base, "/api/config")
-    assert code == 200 and [w["name"] for w in cfg["waves"]] == ["canary", "rest"]
-    assert cfg["waves"][0]["regions"][0]["open_now"] is True
-    code, plan = call(base, "/api/plan")
-    assert code == 200 and plan["waves"][1]["regions"][1]["name"] == "r3"
+    assert code == 200 and [s["name"] for s in cfg["stops"]] == ["canary", "rest"]
+    assert cfg["stops"][0]["platforms"][0]["in_service"] is True
+    code, tt = call(base, "/api/timetable")
+    assert code == 200 and tt["stops"][1]["platforms"][1]["name"] == "r3"
 
 
-def test_start_run_to_completion(server):
+def test_depart_to_arrival(server):
     base, _ = server
-    assert call(base, "/api/runs/start", {"version": "v1.0", "previous_version": "v0.9"}) == (
+    assert call(base, "/api/departures/depart", {"version": "v1.0", "previous_version": "v0.9"}) == (
         200, {"ok": True, "version": "v1.0"})
-    run = wait_for(base, "v1.0", lambda r: r.get("status") == "succeeded")
-    assert all(r["status"] == "succeeded" for r in run["regions"].values())
-    assert "deploy r3 v1.0" in run["log"]
-    assert run["actions"][0]["user"] == "bob" and run["actions"][0]["action"] == "start"
-    # A second start of the same version is refused.
-    assert call(base, "/api/runs/start", {"version": "v1.0"})[0] == 409
-    code, runs = call(base, "/api/runs")
-    assert runs[0]["version"] == "v1.0" and runs[0]["counts"] == {"succeeded": 3}
+    dep = wait_for(base, "v1.0", lambda r: r.get("status") == "succeeded")
+    assert all(p["status"] == "succeeded" for p in dep["platforms"].values())
+    assert "deploy r3 v1.0" in dep["log"]
+    assert dep["actions"][0]["user"] == "bob" and dep["actions"][0]["action"] == "depart"
+    # A second departure of the same version is refused.
+    assert call(base, "/api/departures/depart", {"version": "v1.0"})[0] == 409
+    code, deps = call(base, "/api/departures")
+    assert deps[0]["version"] == "v1.0" and deps[0]["counts"] == {"succeeded": 3}
 
 
 @pytest.mark.parametrize("server", [True], indirect=True)
-def test_approve_then_abort_flow(server):
+def test_clear_signal_flow(server):
     base, _ = server
-    call(base, "/api/runs/start", {"version": "v2"})
-    run = wait_for(base, "v2", lambda r: r.get("pending_approval") == "rest")
-    assert run["status"] == "awaiting_approval" and run["active"]
-    assert call(base, "/api/runs/approve", {"version": "v2", "wave": "canary"})[0] == 409
-    assert call(base, "/api/runs/approve", {"version": "v2", "wave": "rest"}, user="carol")[0] == 200
-    run = wait_for(base, "v2", lambda r: r.get("status") == "succeeded")
-    assert run["waves"]["rest"]["approval"]["by"] == "carol"
-    assert [a["action"] for a in run["actions"]] == ["start", "approve"]
+    call(base, "/api/departures/depart", {"version": "v2"})
+    dep = wait_for(base, "v2", lambda r: r.get("signal_at") == "rest")
+    assert dep["status"] == "at_signal" and dep["active"]
+    assert call(base, "/api/departures/clear-signal", {"version": "v2", "stop": "canary"})[0] == 409
+    assert call(base, "/api/departures/clear-signal", {"version": "v2", "stop": "rest"},
+                user="carol")[0] == 200
+    dep = wait_for(base, "v2", lambda r: r.get("status") == "succeeded")
+    assert dep["stops"]["rest"]["signal"]["cleared_by"] == "carol"
+    assert [a["action"] for a in dep["actions"]] == ["depart", "clear_signal"]
 
 
 @pytest.mark.parametrize("server", [True], indirect=True)
-def test_abort_and_resume(server):
+def test_brake_and_resume(server):
     base, _ = server
-    call(base, "/api/runs/start", {"version": "v3"})
-    wait_for(base, "v3", lambda r: r.get("pending_approval") == "rest")
-    assert call(base, "/api/runs/abort", {"version": "v3"})[0] == 200
-    run = wait_for(base, "v3", lambda r: r.get("status") == "aborted", timeout=40)
-    assert not run["active"]
-    assert call(base, "/api/runs/abort", {"version": "v3"})[0] == 409
-    assert call(base, "/api/runs/resume", {"version": "v3"})[0] == 200
-    wait_for(base, "v3", lambda r: r.get("status") == "awaiting_approval")
-    call(base, "/api/runs/approve", {"version": "v3", "wave": "rest"})
+    call(base, "/api/departures/depart", {"version": "v3"})
+    wait_for(base, "v3", lambda r: r.get("signal_at") == "rest")
+    assert call(base, "/api/departures/brake", {"version": "v3"})[0] == 200
+    dep = wait_for(base, "v3", lambda r: r.get("status") == "aborted", timeout=40)
+    assert not dep["active"]
+    assert call(base, "/api/departures/brake", {"version": "v3"})[0] == 409
+    assert call(base, "/api/departures/resume", {"version": "v3"})[0] == 200
+    wait_for(base, "v3", lambda r: r.get("status") == "at_signal")
+    call(base, "/api/departures/clear-signal", {"version": "v3", "stop": "rest"})
     wait_for(base, "v3", lambda r: r.get("status") == "succeeded")
+
+
+@pytest.mark.parametrize("server", [True], indirect=True)
+def test_legacy_api_paths(server):
+    base, _ = server
+    assert call(base, "/api/runs/start", {"version": "v4"})[0] == 200
+    code, dep = call(base, "/api/run?version=v4")
+    assert code in (200, 404)  # may still be starting
+    wait_for(base, "v4", lambda r: r.get("signal_at") == "rest")
+    assert call(base, "/api/runs/approve", {"version": "v4", "wave": "rest"})[0] == 200
+    wait_for(base, "v4", lambda r: r.get("status") == "succeeded")
+    assert call(base, "/api/runs")[1][0]["version"] == "v4"
+    assert call(base, "/api/plan")[0] == 200

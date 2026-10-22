@@ -5,7 +5,7 @@ Thanks for your interest! Bug reports, docs fixes and features are all welcome.
 ## Before you start
 
 - **Bugs:** open an issue using the bug report template. Include a redacted config and the output of
-  `deploytrain status`.
+  `deploytrain board`.
 - **Features:** open an issue first to discuss the idea, especially for new config options.
   deploytrain aims to stay small, dependency-light and tool-agnostic. It decides *when* and
   *where* to run your commands, but it doesn't know about Kubernetes, AWS and so on.
@@ -27,12 +27,13 @@ Supported Python versions: 3.10 – 3.13. CI runs the tests on Linux for every v
 
 | Path | What it does |
 |---|---|
-| `deploytrain/windows.py` | Time windows, timezones, blackouts. Pure logic with no I/O. |
-| `deploytrain/config.py` | YAML loading and validation |
-| `deploytrain/train.py` | The orchestrator: waves, regions, bake, rollback, approvals, state file |
+| `deploytrain/timetable.py` | Timetables: service hours, timezones, line closures. Pure logic with no I/O. |
+| `deploytrain/config.py` | YAML loading and validation: `Stop`, `Platform`, `TrainConfig` |
+| `deploytrain/train.py` | The train: stops, platforms, dwell and inspection, rollback, signals, brake, state file |
 | `deploytrain/notify.py` | Slack notifications |
 | `deploytrain/web.py`, `deploytrain/ui/index.html` | Web UI: JSON API plus a single-page dashboard with no build step |
 | `deploytrain/cli.py` | Command-line interface |
+| `deploytrain/_compat.py` | Pre-rename names (waves, regions, windows, …) still accepted as aliases |
 
 ## Guidelines
 
@@ -42,8 +43,10 @@ Supported Python versions: 3.10 – 3.13. CI runs the tests on Linux for every v
 - **Dependencies:** keep runtime dependencies minimal. Today there is one, PyYAML. The web
   UI is plain HTML/CSS/JS with no CDN, so it works on air-gapped networks.
 - **Notifications:** a notification failure must never break a deploy.
+- **Vocabulary:** use the railway terms (train, stop, platform, timetable, dwell, signal).
+  See the vocabulary table in the README.
 - **State format:** state files must stay resumable across versions. If you change the state
-  format, make sure older state files still load.
+  format, make sure older state files still load (see `migrate_state` in `train.py`).
 - **CHANGELOG:** update `CHANGELOG.md` under "Unreleased" for user-visible changes.
 
 ## Pull requests

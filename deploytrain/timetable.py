@@ -1,10 +1,15 @@
-"""Deployment windows: timezone-aware recurring windows minus blackout periods."""
+"""Timetables: when a platform may receive a deploy.
+
+A timetable is a set of timezone-aware recurring service hours, minus line closures.
+"""
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+from ._compat import pick
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 SEARCH_HORIZON_DAYS = 90
@@ -80,10 +85,10 @@ class Interval:
 
 
 @dataclass(frozen=True)
-class RecurringWindow:
+class ServiceHours:
     days: tuple[int, ...]
     start: time
-    end: time  # if end <= start the window crosses midnight
+    end: time  # if end <= start the service crosses midnight
 
     def intervals_on(self, d: date, tz: ZoneInfo) -> list[Interval]:
         if d.weekday() not in self.days:
@@ -95,13 +100,13 @@ class RecurringWindow:
 
 
 @dataclass(frozen=True)
-class Blackout:
+class LineClosure:
     start: datetime
     end: datetime
     reason: str = ""
 
     @classmethod
-    def from_config(cls, raw: dict, default_tz: str = "UTC") -> "Blackout":
+    def from_config(cls, raw: dict, default_tz: str = "UTC") -> "LineClosure":
         tz = ZoneInfo(raw.get("timezone", default_tz))
 
         def conv(v, is_end):
@@ -122,12 +127,12 @@ class Blackout:
 
         start, end = conv(raw["start"], False), conv(raw["end"], True)
         if end <= start:
-            raise ValueError(f"blackout end must be after start: {raw}")
+            raise ValueError(f"line closure end must be after start: {raw}")
         return cls(start, end, raw.get("reason", ""))
 
 
-def _subtract(intervals: list[Interval], blackouts: list[Blackout]) -> list[Interval]:
-    for b in blackouts:
+def _subtract(intervals: list[Interval], closures: list[LineClosure]) -> list[Interval]:
+    for b in closures:
         out = []
         for iv in intervals:
             if b.end <= iv.start or b.start >= iv.end:
@@ -142,46 +147,47 @@ def _subtract(intervals: list[Interval], blackouts: list[Blackout]) -> list[Inte
 
 
 @dataclass
-class WindowProfile:
+class Timetable:
     name: str
     timezone: str = "UTC"
-    windows: list[RecurringWindow] = field(default_factory=list)
-    blackouts: list[Blackout] = field(default_factory=list)
-    # Only start a deploy if at least this much of the window remains.
+    service_hours: list[ServiceHours] = field(default_factory=list)
+    closures: list[LineClosure] = field(default_factory=list)
+    # Only start a deploy if at least this much of the service period remains.
     min_remaining: timedelta = timedelta(0)
 
     @classmethod
-    def from_config(cls, name: str, raw: dict, global_blackouts: list[Blackout]) -> "WindowProfile":
+    def from_config(cls, name: str, raw: dict, line_closures: list[LineClosure]) -> "Timetable":
         tzname = raw.get("timezone", "UTC")
         ZoneInfo(tzname)  # validate
-        windows = []
-        for w in raw.get("windows", []):
-            windows.append(RecurringWindow(
+        hours = []
+        for w in pick(raw, "service_hours", "windows", default=[]) or []:
+            hours.append(ServiceHours(
                 days=tuple(_parse_days(w.get("days"))),
                 start=_parse_hhmm(w.get("start", "00:00")),
                 end=_parse_hhmm(w.get("end", "00:00")),
             ))
-        if not windows:  # no windows declared => always open
-            windows.append(RecurringWindow(tuple(range(7)), time(0), time(0)))
-        blackouts = list(global_blackouts) + [
-            Blackout.from_config(b, tzname) for b in raw.get("blackouts", [])
+        if not hours:  # no service hours declared => always in service
+            hours.append(ServiceHours(tuple(range(7)), time(0), time(0)))
+        closures = list(line_closures) + [
+            LineClosure.from_config(b, tzname)
+            for b in pick(raw, "line_closures", "blackouts", default=[]) or []
         ]
         return cls(
             name=name,
             timezone=tzname,
-            windows=windows,
-            blackouts=blackouts,
+            service_hours=hours,
+            closures=closures,
             min_remaining=parse_duration(raw.get("min_remaining", 0)),
         )
 
     def intervals(self, frm: datetime, days: int = SEARCH_HORIZON_DAYS) -> list[Interval]:
-        """Open intervals (UTC, blackouts removed, merged) overlapping [frm, frm+days)."""
+        """In-service intervals (UTC, closures removed, merged) overlapping [frm, frm+days)."""
         tz = ZoneInfo(self.timezone)
         local_day = frm.astimezone(tz).date()
         raw: list[Interval] = []
         for offset in range(-1, days + 1):
             d = local_day + timedelta(days=offset)
-            for w in self.windows:
+            for w in self.service_hours:
                 raw.extend(w.intervals_on(d, tz))
         raw.sort(key=lambda iv: iv.start)
         merged: list[Interval] = []
@@ -191,7 +197,7 @@ class WindowProfile:
                     merged[-1] = Interval(merged[-1].start, iv.end)
             else:
                 merged.append(iv)
-        return [iv for iv in _subtract(merged, self.blackouts) if iv.end > frm]
+        return [iv for iv in _subtract(merged, self.closures) if iv.end > frm]
 
     def can_start(self, t: datetime) -> bool:
         return self.next_start(t) == t
@@ -203,20 +209,20 @@ class WindowProfile:
             candidate = max(iv.start, t)
             if iv.end - candidate >= max(self.min_remaining, timedelta(seconds=1)):
                 return candidate
-        raise NoWindowError(
-            f"window profile {self.name!r} has no usable window in the next "
+        raise NoServiceError(
+            f"timetable {self.name!r} has no usable service in the next "
             f"{SEARCH_HORIZON_DAYS} days after {t.isoformat()}"
         )
 
-    def window_end(self, t: datetime) -> datetime | None:
+    def service_end(self, t: datetime) -> datetime | None:
         for iv in self.intervals(t, days=2):
             if t in iv:
                 return iv.end
         return None
 
-    def active_blackout(self, t: datetime) -> Blackout | None:
-        return next((b for b in self.blackouts if b.start <= t < b.end), None)
+    def active_closure(self, t: datetime) -> LineClosure | None:
+        return next((b for b in self.closures if b.start <= t < b.end), None)
 
 
-class NoWindowError(RuntimeError):
+class NoServiceError(RuntimeError):
     pass

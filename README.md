@@ -4,32 +4,48 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
-Rolls a release out region by region in **waves**. Each region deploys only inside its own
-**time window**, which is timezone-aware, supports overnight windows and blackouts, and
-can require a minimum amount of window left before a deploy starts. After each deploy the
-train **bakes** the region and runs health checks, and it **rolls back** and stops on failure.
+Runs your releases like a railway. Each version is a **train** that calls at a series of
+**stops** in order: a canary first, then progressively larger groups of **platforms**
+(regions, clusters, …). Each platform keeps its own **timetable**, so deploys only start
+during its service hours, in its own timezone. After each deploy the train **dwells** at
+the platform while it's inspected (health checks). On failure it **rolls back** and halts.
+A **signal** can hold the train at a stop until a person clears it.
 
 deploytrain does not deploy anything itself. You supply shell commands (helm, kubectl,
 terraform, CodeDeploy, etc.), and deploytrain decides *when* and *where* to run them.
 
-![deploytrain web UI: a release rolling out wave by wave, one region baking and one waiting for its window](docs/screenshot.png)
+![deploytrain web UI: a release on its route, one platform dwelling and one held at a signal](docs/screenshot.png)
+
+## Vocabulary
+
+| Term | Meaning |
+|---|---|
+| **train** | One version being rolled out |
+| **stop** | A step in the rollout: a group of platforms served together |
+| **platform** | One deploy target: a region, cluster, data centre, … |
+| **timetable** | When a platform may receive deploys: **service hours** in a timezone, minus **line closures** |
+| **held at signal** | The platform is waiting for its timetable to come into service |
+| **dwell** | How long the train waits at a platform after deploying, while **inspections** (health checks) run |
+| **headway** | Minimum gap between finishing one stop and starting the next |
+| **signal** | A manual gate: the stop waits until someone **clears the signal** |
+| **emergency brake** | Stop the train at its next checkpoint (resumable) |
 
 ## Features
 
-- **Waves:** canary first, then progressively larger groups of regions, with
-  `max_parallel` regions at a time within a wave.
-- **Time windows per region:** e.g. "Mon–Thu 09:00–16:00 Europe/Dublin". DST is handled,
-  windows can cross midnight, and global or per-region blackouts are supported (holiday
-  freezes, launch days).
-- **Bake and health checks:** after each deploy the region bakes while health checks run.
-  On failure the train rolls back (the region, the wave or the whole train) and stops.
-- **Approval gates:** a wave can wait for a human to approve it before deploying.
+- **Stops:** a canary first, then progressively larger stops, serving up to
+  `parallel_platforms` platforms at a time.
+- **Timetables per platform:** e.g. "Mon–Thu 09:00–16:00 Europe/Dublin". DST is handled,
+  service hours can cross midnight, and line closures can apply globally or to one
+  timetable (holiday freezes, launch days).
+- **Dwell and inspection:** after each deploy, the platform dwells while inspections run.
+  On failure the train rolls back (the platform, the stop or the whole train) and halts.
+- **Signals:** a stop can wait for someone to clear its signal before deploying.
 - **Resumable:** the train survives crashes and restarts. Re-run the same command to
-  continue, or retry just the failed regions.
+  continue, or retry just the failed platforms.
 - **Slack:** one live-updating message per train, with details in its thread and a
   mention on failures.
-- **Web UI:** see status, start runs, approve, abort and retry, with an audit trail of who
-  did what.
+- **Web UI:** a departure board where you can dispatch trains, clear signals, pull the
+  brake and retry, with an audit trail of who did what.
 - **Small:** one runtime dependency (PyYAML). The UI has no build step and needs no CDN.
 
 ## Install
@@ -43,60 +59,64 @@ pip install "git+https://github.com/VishnuT-Procore/clockwork"
 ## Quick start
 
 ```
-deploytrain -c examples/train.yaml plan                 # projected schedule per region
-deploytrain -c examples/train.yaml windows              # upcoming open windows
-deploytrain -c examples/train.yaml run --version v1.4.0 --previous-version v1.3.2
-deploytrain -c examples/train.yaml status --version v1.4.0
-deploytrain -c examples/train.yaml abort  --version v1.4.0   # from another shell
-deploytrain -c examples/train.yaml approve --version v1.4.0 --wave wave-2
+deploytrain -c examples/train.yaml timetable            # projected departure per platform
+deploytrain -c examples/train.yaml service              # upcoming service hours
+deploytrain -c examples/train.yaml depart --version v1.4.0 --previous-version v1.3.2
+deploytrain -c examples/train.yaml board --version v1.4.0
+deploytrain -c examples/train.yaml clear-signal --version v1.4.0 --stop atlantic
+deploytrain -c examples/train.yaml brake --version v1.4.0   # from another shell
 deploytrain -c examples/train.yaml ui      # web dashboard on http://127.0.0.1:8080
 ```
 
-## How it runs
+## How a journey runs
 
-1. Waves run in order. A wave starts only after every region in the previous wave has
-   finished baking, plus the optional `gap`.
-2. Within a wave, up to `max_parallel` regions run at once. Each region:
-   - **waits** until its window profile allows a start (`next_start`). If that is further
-     away than `window_wait_timeout`, the region fails.
+1. The train calls at stops in order. It leaves a stop only after every platform there
+   has finished dwelling. Then it waits out the next stop's `headway`, if one is set.
+2. If a stop has `signal: true`, the train waits there until someone clears the signal.
+3. At each stop, up to `parallel_platforms` platforms are served at once. Each platform:
+   - **is held at a signal** until its timetable is in service. If that's further away
+     than `max_hold`, the platform fails.
    - **deploys** by running `deploy_command`, which is subject to `deploy_timeout`.
-   - **bakes** for `bake`, running `health_check_command` every `health_check_interval`.
-3. On any failure the train stops scheduling new regions. In-flight regions finish, and
-   rollback runs according to `rollback_scope`:
+   - **dwells** for `dwell`, running `inspection_command` every `inspection_interval`.
+4. On any failure the train halts and serves no new platforms. Platforms already being
+   served finish, and rollback runs according to `rollback_scope`:
    - `none`
-   - `region`: only the failed region
-   - `wave`: the failed wave
-   - `train`: every region updated in this run
-4. State is saved to `.deploytrain/<train>-<version>.json`. Re-running the same command
-   resumes from that state, and succeeded regions are skipped. Failed regions need `--retry-failed`.
+   - `platform`: only the failed platform
+   - `stop`: the failed stop
+   - `train`: every platform updated on this journey
+5. State is saved to `.deploytrain/<train>-<version>.json`. Re-running the same command
+   resumes from that state, and platforms that succeeded are skipped. Failed platforms
+   need `--retry-failed`.
 
 ## Config
 
-See [`examples/train.yaml`](examples/train.yaml). Settings cascade from region to wave to
-`train` defaults, for `window`, `bake` and `deploy_timeout`.
+See [`examples/train.yaml`](examples/train.yaml). `timetable`, `dwell` and
+`deploy_timeout` can be set per platform, per stop, or as train defaults
+(`default_timetable`, `default_dwell`, `deploy_timeout`). The most specific setting wins.
 
-| Window profile key | Meaning |
+| Timetable key | Meaning |
 |---|---|
-| `timezone` | IANA zone for the window times, e.g. `Europe/Dublin`. DST is handled. |
-| `windows[].days` | `mon-thu`, `[mon, wed]`, `fri-mon` (wraps around) or `all` |
-| `windows[].start/end` | `"HH:MM"` local time. If `end <= start`, the window crosses midnight. |
-| `min_remaining` | Don't start a deploy unless at least this much of the window is left |
-| `blackouts` | `{start, end, reason, timezone?}`. A date-only `end` is inclusive. |
+| `timezone` | IANA zone for the service hours, e.g. `Europe/Dublin`. DST is handled. |
+| `service_hours[].days` | `mon-thu`, `[mon, wed]`, `fri-mon` (wraps around) or `all` |
+| `service_hours[].start/end` | `"HH:MM"` local time. If `end <= start`, service runs past midnight. |
+| `min_remaining` | Don't start a deploy unless at least this much service time is left |
+| `line_closures` | `{start, end, reason, timezone?}`. A date-only `end` is inclusive. |
 
-Global `train.blackouts`, such as a holiday freeze, apply to every profile. A profile
-without `windows` is always open. The built-in profile `always` is also available.
+Global `train.line_closures`, such as a holiday freeze, apply to every timetable. A
+timetable without `service_hours` is always in service. The built-in timetable `always`
+is also available.
 
-Commands are templates using `{train} {region} {wave} {version} {previous_version}` plus
-any region `vars`. The same values are exported as env vars (`DT_REGION`, `DT_CLUSTER`, …).
-Escape literal braces as `{{ }}`.
+Commands are templates using `{train} {platform} {stop} {version} {previous_version}`
+plus any platform `vars`. The same values are exported as env vars (`DT_PLATFORM`,
+`DT_STOP`, `DT_CLUSTER`, …). Escape literal braces as `{{ }}`.
 
-## Approval gates
+## Signals
 
-A wave with `approval: true` pauses before deploying. The run's status is set to
-`awaiting_approval` and Slack posts a message, which links to the UI if `ui_url` is set.
-The wave continues once someone approves it, either in the web UI or with
-`deploytrain approve --version V --wave W`. The approver's name is recorded in the run.
-If you abort and resume a run, an approval it already has is kept.
+A stop with `signal: true` stops the train before deploying. The train's status becomes
+`at_signal`, and Slack posts a message that links to the UI if `ui_url` is set. The
+train proceeds once someone clears the signal, either in the web UI or with
+`deploytrain clear-signal --version V --stop S`. The name of whoever cleared it is
+recorded. If you brake and then resume, a signal that was already cleared stays cleared.
 
 ## Web UI
 
@@ -105,27 +125,29 @@ deploytrain -c train.yaml ui --host 127.0.0.1 --port 8080
 ```
 
 **What you can see**
-- **Runs list**, showing each run's status and progress.
-- **Pipeline view.** Each region shows its status, its failure output, and whether its
-  window is open (or when it opens next, in the region's own timezone).
-- **Events**, with routine health checks hidden unless you ask for them.
-- **Live log** of the run.
+- **Departures**, showing each train's status and progress.
+- **Route view.** Each platform shows its status and any failure output. It also shows
+  whether its timetable is in service, or when service resumes in the platform's own
+  timezone.
+- **Events**, with routine inspections hidden unless you ask for them.
+- **Live log** of the journey.
 - **"Who did what"**, an audit trail of actions taken in the UI.
-- **Regions & windows**, an overview of every region's window right now, plus a projected
-  schedule for a run started now.
+- **Timetable**, showing each platform's service right now and projected departures for a
+  train leaving now.
 
 **What you can do**
-- **New run**, with a dry-run option and a preview of the projected schedule.
-- **Approve** a wave.
-- **Abort** a run.
-- **Resume** an interrupted or aborted run.
-- **Retry failed regions.**
+- **New departure**, with a dry-run option and a preview of the timetable.
+- **Clear a signal.**
+- **Pull the emergency brake.**
+- **Resume** an interrupted or braked journey.
+- **Retry failed platforms.**
 
 **How it works**
-- The UI only reads state files. Runs are started as separate `deploytrain run` processes,
-  logging to `.deploytrain/<train>-<version>.log`, so the UI can restart without affecting them.
-- Abort and approve use the same marker files as the CLI.
-- Only one process may own a run at a time. A run whose process died shows as
+- The UI only reads state files. Each train runs as a separate `deploytrain depart`
+  process, logging to `.deploytrain/<train>-<version>.log`. The UI can restart without
+  affecting trains en route.
+- The brake and signals use the same marker files as the CLI.
+- Only one process may drive a train at a time. A train whose process died shows as
   *interrupted*, and you can resume it.
 
 **Access and auth**
@@ -147,39 +169,64 @@ notifications:
     token_env: SLACK_BOT_TOKEN      # default
     webhook_url_env: SLACK_WEBHOOK_URL  # default; used when no bot token is set
     mention_on_failure: "<!here>"   # or "<!subteam^S0123ABCD>" / "<@U0123ABCD>"
+    ui_url: https://deploytrain.example.com  # signal messages link here
     events: [...]                   # optional filter, see below
 ```
 
 **Bot mode (recommended).** Create a Slack app with the `chat:write` scope, install it,
 invite it to the channel and export `SLACK_BOT_TOKEN`.
-- Each train gets **one message in the channel**. It is edited live with a per-wave status
-  board, e.g. `canary ✅ us-west-2 · wave-2 ⏳ eu-west-1 🚀 us-east-1`.
+- Each train gets **one message in the channel**. It is edited live with a per-stop
+  status board, e.g. `canary ✅ us-west-2 · atlantic 🚦 eu-west-1 🚀 us-east-1`.
 - Every event is posted as a **reply in that message's thread**.
-- Failures and the final result are also broadcast to the channel.
+- Failures, red signals and the final result are also broadcast to the channel.
 - If you resume the train, updates go to the same thread.
 
 **Webhook mode.** Export `SLACK_WEBHOOK_URL` (an incoming webhook). Each event is posted as
 its own message.
 
-The available events are `train_started`, `train_resumed`, `train_finished`, `wave_started`,
-`wave_completed`, `wave_awaiting_approval`, `wave_approved`, `region_waiting`, `region_deploying`, `region_succeeded`, `region_failed`
-and `region_rolled_back`. All are sent by default except `region_deploying`. Failure
+The available events are `train_started`, `train_resumed`, `train_finished`,
+`stop_started`, `stop_completed`, `stop_at_signal`, `signal_cleared`, `platform_held`,
+`platform_deploying`, `platform_succeeded`, `platform_failed` and
+`platform_rolled_back`. All are sent by default except `platform_deploying`. Failure
 messages include the last part of the failing command's output, plus the
 `mention_on_failure` mention.
 
 **If Slack is unavailable.** A Slack error or a missing credential is logged as a warning
 and never stops a deploy.
 - `deploytrain notify-test` sends a test message so you can check the setup.
-- `run --no-notify` turns notifications off for one run.
+- `depart --no-notify` turns notifications off for one journey.
 - Notifications are always off in `--dry-run`.
 
 ## Running it in CI
 
-A train can run for days while it waits for windows, so run it as a long-lived job, such
-as a Kubernetes Job or a self-hosted runner, with `state_dir` on persistent storage.
-Alternatively, run it on a schedule (cron or a scheduled pipeline) with a short
-`window_wait_timeout`. Each invocation then resumes and advances as far as the currently
-open windows allow.
+A train can take days to complete its journey while it waits for service hours, so run
+it as a long-lived job, such as a Kubernetes Job or a self-hosted runner, with
+`state_dir` on persistent storage. Alternatively, run it on a schedule (cron or a
+scheduled pipeline) with a short `max_hold`. Each invocation then resumes and travels as
+far as the current timetables allow.
+
+## Upgrading from the old names
+
+Earlier development versions used generic terms. They are all still accepted, so
+existing configs, scripts and state files keep working. Using an old name and its new
+name together is an error.
+
+| Old | New |
+|---|---|
+| `waves:` / `regions:` | `stops:` / `platforms:` |
+| `windows:` (profiles) / `windows:` (inside a profile) | `timetables:` / `service_hours:` |
+| `window:` / `default_window` | `timetable:` / `default_timetable` |
+| `blackouts` | `line_closures` |
+| `bake` / `default_bake` | `dwell` / `default_dwell` |
+| `gap` | `headway` |
+| `max_parallel` | `parallel_platforms` |
+| `approval: true` | `signal: true` |
+| `health_check_command` / `health_check_interval` | `inspection_command` / `inspection_interval` |
+| `window_wait_timeout` | `max_hold` |
+| `rollback_scope: region / wave` | `rollback_scope: platform / stop` |
+| `{region}` / `{wave}`, `DT_REGION` / `DT_WAVE` | `{platform}` / `{stop}`, `DT_PLATFORM` / `DT_STOP` |
+| `plan`, `windows`, `run`, `status`, `approve --wave`, `abort` | `timetable`, `service`, `depart`, `board`, `clear-signal --stop`, `brake` |
+| Slack events `wave_*` / `region_*` | `stop_*`, `signal_cleared` / `platform_*` |
 
 ## Contributing
 

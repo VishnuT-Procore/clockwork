@@ -1,7 +1,7 @@
 # Security policy
 
 deploytrain runs deployment commands against production systems and can expose a web UI
-that starts and aborts deploys, so security reports are taken seriously.
+that dispatches trains and pulls their brakes, so security reports are taken seriously.
 
 ## Reporting a vulnerability
 
@@ -21,10 +21,10 @@ Only the latest release receives security fixes while the project is at 0.x.
 
 - The web UI listens on `127.0.0.1` by default. If you expose it more widely, put it behind
   an authenticating proxy (SSO), or at least set `DEPLOYTRAIN_UI_TOKEN`. Anyone who can
-  reach the UI can start, approve and abort deploys.
+  reach the UI can dispatch trains, clear signals and pull the brake.
 - Keep Slack tokens and webhook URLs in environment variables. The config file only names
   the variables (`token_env`, `webhook_url_env`).
 - Command templates in `train.yaml` are executed by a shell. Treat the config file as code:
   review changes to it and limit who can edit it.
-- Region `vars` and versions are substituted into shell commands. Versions entered in the
+- Platform `vars` and versions are substituted into shell commands. Versions entered in the
   web UI are restricted to `[A-Za-z0-9._+-]`, but quote variables in your scripts anyway.

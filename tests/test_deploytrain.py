@@ -4,11 +4,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from deploytrain import config
+from deploytrain.timetable import LineClosure, Timetable, parse_duration
 from deploytrain.train import (
-    ABORTED, FAILED, PENDING, ROLLED_BACK, SUCCEEDED, AbortRequested, CommandResult, Train,
-    abort_path, plan,
+    ABORTED, FAILED, ROLLED_BACK, SCHEDULED, SUCCEEDED, BrakeApplied, CommandResult, Train,
+    brake_path, project,
 )
-from deploytrain.windows import WindowProfile, parse_duration
 
 UTC = timezone.utc
 
@@ -38,9 +38,11 @@ class FakeRunner:
         self.fail = fail or {}
         self.on_call = on_call
         self.calls = []
+        self.envs = []
 
     def __call__(self, command, env, timeout):
         self.calls.append((self.clock.now(), command))
+        self.envs.append(env)
         if self.on_call:
             self.on_call(command)
         if command.startswith("deploy"):
@@ -58,25 +60,25 @@ def make_cfg(tmp_path, **overrides):
     raw = {
         "train": {
             "name": "svc",
-            "deploy_command": "deploy {region} {version}",
-            "health_check_command": "health {region}",
-            "rollback_command": "rollback {region} {previous_version}",
-            "health_check_interval": "5m",
-            "default_bake": "15m",
-            "default_window": "us",
-            "rollback_scope": "region",
+            "deploy_command": "deploy {platform} {version}",
+            "inspection_command": "inspect {platform}",
+            "rollback_command": "rollback {platform} {previous_version}",
+            "inspection_interval": "5m",
+            "default_dwell": "15m",
+            "default_timetable": "us",
+            "rollback_scope": "platform",
             "state_dir": str(tmp_path / "state"),
         },
-        "windows": {
+        "timetables": {
             "us": {"timezone": "America/New_York",
-                   "windows": [{"days": "mon-thu", "start": "09:00", "end": "16:00"}]},
+                   "service_hours": [{"days": "mon-thu", "start": "09:00", "end": "16:00"}]},
             "eu": {"timezone": "Europe/Dublin",
-                   "windows": [{"days": "mon-fri", "start": "09:00", "end": "17:00"}]},
+                   "service_hours": [{"days": "mon-fri", "start": "09:00", "end": "17:00"}]},
         },
-        "waves": [
-            {"name": "canary", "regions": ["us-canary"]},
-            {"name": "w1", "max_parallel": 2,
-             "regions": ["us-east", {"name": "eu-west", "window": "eu"}]},
+        "stops": [
+            {"name": "canary", "platforms": ["us-canary"]},
+            {"name": "s1", "parallel_platforms": 2,
+             "platforms": ["us-east", {"name": "eu-west", "timetable": "eu"}]},
         ],
     }
     for k, v in overrides.items():
@@ -85,7 +87,7 @@ def make_cfg(tmp_path, **overrides):
     return config.from_dict(raw, base_dir=tmp_path)
 
 
-# ---- windows -----------------------------------------------------------------
+# ---- timetables --------------------------------------------------------------
 
 def test_parse_duration():
     assert parse_duration("1h30m") == timedelta(minutes=90)
@@ -95,98 +97,121 @@ def test_parse_duration():
         parse_duration("5 parsecs")
 
 
-def test_window_open_and_next_start():
-    prof = WindowProfile.from_config("us", {
+def test_in_service_and_next_start():
+    tt = Timetable.from_config("us", {
         "timezone": "America/New_York",
-        "windows": [{"days": "mon-thu", "start": "09:00", "end": "16:00"}],
+        "service_hours": [{"days": "mon-thu", "start": "09:00", "end": "16:00"}],
     }, [])
-    # Thu 2026-10-22 14:00 UTC = 10:00 EDT -> open
-    assert prof.can_start(dt("2026-10-22T14:00"))
-    # Thu 21:00 UTC = 17:00 EDT -> closed, next is Mon 09:00 EDT = 13:00 UTC
-    assert prof.next_start(dt("2026-10-22T21:00")) == dt("2026-10-26T13:00")
+    # Thu 2026-10-22 14:00 UTC = 10:00 EDT -> in service
+    assert tt.can_start(dt("2026-10-22T14:00"))
+    # Thu 21:00 UTC = 17:00 EDT -> no service, next is Mon 09:00 EDT = 13:00 UTC
+    assert tt.next_start(dt("2026-10-22T21:00")) == dt("2026-10-26T13:00")
 
 
-def test_window_after_dst_change():
-    prof = WindowProfile.from_config("us", {
+def test_service_after_dst_change():
+    tt = Timetable.from_config("us", {
         "timezone": "America/New_York",
-        "windows": [{"days": "mon", "start": "09:00", "end": "16:00"}],
+        "service_hours": [{"days": "mon", "start": "09:00", "end": "16:00"}],
     }, [])
     # US DST ends Nov 1 2026: Mon Nov 2 09:00 EST = 14:00 UTC
-    assert prof.next_start(dt("2026-10-27T00:00")) == dt("2026-11-02T14:00")
+    assert tt.next_start(dt("2026-10-27T00:00")) == dt("2026-11-02T14:00")
 
 
-def test_overnight_window():
-    prof = WindowProfile.from_config("night", {
-        "timezone": "UTC", "windows": [{"days": "fri", "start": "22:00", "end": "04:00"}],
+def test_overnight_service():
+    tt = Timetable.from_config("night", {
+        "timezone": "UTC", "service_hours": [{"days": "fri", "start": "22:00", "end": "04:00"}],
     }, [])
-    assert prof.can_start(dt("2026-10-24T02:00"))  # Saturday early hours belong to Friday's window
-    assert not prof.can_start(dt("2026-10-24T05:00"))
+    assert tt.can_start(dt("2026-10-24T02:00"))  # Saturday early hours belong to Friday's service
+    assert not tt.can_start(dt("2026-10-24T05:00"))
 
 
 def test_min_remaining():
-    prof = WindowProfile.from_config("us", {
+    tt = Timetable.from_config("us", {
         "timezone": "UTC", "min_remaining": "1h",
-        "windows": [{"days": "all", "start": "09:00", "end": "17:00"}],
+        "service_hours": [{"days": "all", "start": "09:00", "end": "17:00"}],
     }, [])
-    assert prof.can_start(dt("2026-10-22T15:59"))
-    assert prof.next_start(dt("2026-10-22T16:30")) == dt("2026-10-23T09:00")
+    assert tt.can_start(dt("2026-10-22T15:59"))
+    assert tt.next_start(dt("2026-10-22T16:30")) == dt("2026-10-23T09:00")
 
 
-def test_blackout_carves_window():
-    cfg_blackouts = [config.Blackout.from_config(
+def test_line_closure_carves_service():
+    closures = [LineClosure.from_config(
         {"start": "2026-10-22T10:00", "end": "2026-10-22T12:00", "reason": "x"})]
-    prof = WindowProfile.from_config("p", {
-        "timezone": "UTC", "windows": [{"days": "all", "start": "09:00", "end": "17:00"}],
-    }, cfg_blackouts)
-    assert prof.next_start(dt("2026-10-22T10:30")) == dt("2026-10-22T12:00")
-    # Whole-day blackout with inclusive end date
-    day = config.Blackout.from_config({"start": "2026-10-22", "end": "2026-10-23"})
+    tt = Timetable.from_config("p", {
+        "timezone": "UTC", "service_hours": [{"days": "all", "start": "09:00", "end": "17:00"}],
+    }, closures)
+    assert tt.next_start(dt("2026-10-22T10:30")) == dt("2026-10-22T12:00")
+    assert tt.active_closure(dt("2026-10-22T11:00")).reason == "x"
+    # Whole-day closure with inclusive end date
+    day = LineClosure.from_config({"start": "2026-10-22", "end": "2026-10-23"})
     assert day.end == dt("2026-10-24T00:00")
 
 
 # ---- config ------------------------------------------------------------------
 
-def test_config_rejects_unknown_window(tmp_path):
-    with pytest.raises(config.ConfigError, match="unknown window"):
-        make_cfg(tmp_path, train__default_window="nope")
+def test_config_rejects_unknown_timetable(tmp_path):
+    with pytest.raises(config.ConfigError, match="unknown timetable"):
+        make_cfg(tmp_path, train__default_timetable="nope")
 
 
-def test_config_rejects_duplicate_region():
-    with pytest.raises(config.ConfigError, match="more than one wave"):
+def test_config_rejects_duplicate_platform():
+    with pytest.raises(config.ConfigError, match="more than one stop"):
         config.from_dict({
             "train": {"name": "s", "deploy_command": "d"},
-            "waves": [{"regions": ["a"]}, {"regions": ["a"]}],
+            "stops": [{"platforms": ["a"]}, {"platforms": ["a"]}],
+        })
+
+
+def test_config_rejects_bad_duration():
+    with pytest.raises(config.ConfigError, match="invalid duration"):
+        config.from_dict({
+            "train": {"name": "s", "deploy_command": "d", "default_dwell": "soon"},
+            "stops": [{"platforms": ["a"]}],
         })
 
 
 # ---- train -------------------------------------------------------------------
 
-def test_happy_path_waits_for_windows(tmp_path):
+def test_happy_path_waits_for_service(tmp_path):
     cfg = make_cfg(tmp_path)
-    clock = FakeClock(dt("2026-10-22T21:00"))  # Thu 17:00 EDT: US window closed
+    clock = FakeClock(dt("2026-10-22T21:00"))  # Thu 17:00 EDT: no US service
     runner = FakeRunner(clock)
-    status = Train(cfg, "v2", "v1", runner=runner, clock=clock).run()
-    assert status == SUCCEEDED
+    train = Train(cfg, "v2", "v1", runner=runner, clock=clock)
+    assert train.run() == SUCCEEDED
     deploys = [(t, c) for t, c in runner.calls if c.startswith("deploy")]
     assert deploys[0] == (dt("2026-10-26T13:00"), "deploy us-canary v2")
-    # Wave 1 starts only after canary deploy (10m) + bake (15m)
-    w1 = {c: t for t, c in deploys[1:]}
-    assert set(w1) == {"deploy us-east v2", "deploy eu-west v2"}
-    assert all(t >= dt("2026-10-26T13:25") for t in w1.values())
-    assert runner.commands("health")  # health checks ran during bake
+    # Stop s1 is served only after the canary deploy (10m) + dwell (15m)
+    s1 = {c: t for t, c in deploys[1:]}
+    assert set(s1) == {"deploy us-east v2", "deploy eu-west v2"}
+    assert all(t >= dt("2026-10-26T13:25") for t in s1.values())
+    assert runner.commands("inspect")  # inspections ran while dwelling
     assert not runner.commands("rollback")
+    held = [e for e in train.state.data["events"] if e["message"].startswith("held at signal")]
+    assert held and held[0]["platform"] == "us-canary"
 
 
-def test_failure_rolls_back_region_and_halts(tmp_path):
+def test_command_variables_and_env(tmp_path):
     cfg = make_cfg(tmp_path)
     clock = FakeClock(dt("2026-10-26T14:00"))
-    runner = FakeRunner(clock, fail={"health us-canary": 1})
+    runner = FakeRunner(clock)
+    Train(cfg, "v2", "v1", runner=runner, clock=clock).run()
+    env = runner.envs[0]
+    assert env["DT_PLATFORM"] == env["DT_REGION"] == "us-canary"
+    assert env["DT_STOP"] == env["DT_WAVE"] == "canary"
+    assert env["DT_VERSION"] == "v2" and env["DT_PREVIOUS_VERSION"] == "v1"
+
+
+def test_failure_rolls_back_platform_and_halts(tmp_path):
+    cfg = make_cfg(tmp_path)
+    clock = FakeClock(dt("2026-10-26T14:00"))
+    runner = FakeRunner(clock, fail={"inspect us-canary": 1})
     train = Train(cfg, "v2", "v1", runner=runner, clock=clock)
     assert train.run() == FAILED
     assert runner.commands("rollback") == ["rollback us-canary v1"]
-    regions = train.state.data["regions"]
-    assert regions["us-canary"]["status"] == ROLLED_BACK
-    assert regions["us-east"]["status"] == PENDING
+    platforms = train.state.data["platforms"]
+    assert platforms["us-canary"]["status"] == ROLLED_BACK
+    assert platforms["us-canary"]["output"] == "boom"
+    assert platforms["us-east"]["status"] == SCHEDULED
     assert not [c for c in runner.commands("deploy") if "us-east" in c]
 
 
@@ -194,13 +219,22 @@ def test_train_rollback_scope(tmp_path):
     cfg = make_cfg(tmp_path, train__rollback_scope="train")
     clock = FakeClock(dt("2026-10-26T14:00"))
     runner = FakeRunner(clock, fail={"deploy eu-west": 1})
-    cfg.waves[1].max_parallel = 1  # deterministic ordering
+    cfg.stops[1].parallel_platforms = 1  # deterministic ordering
     assert Train(cfg, "v2", "v1", runner=runner, clock=clock).run() == FAILED
     assert sorted(runner.commands("rollback")) == [
         "rollback eu-west v1", "rollback us-canary v1", "rollback us-east v1"]
 
 
-def test_resume_skips_succeeded_regions(tmp_path):
+def test_stop_rollback_scope(tmp_path):
+    cfg = make_cfg(tmp_path, train__rollback_scope="stop")
+    clock = FakeClock(dt("2026-10-26T14:00"))
+    runner = FakeRunner(clock, fail={"deploy eu-west": 1})
+    cfg.stops[1].parallel_platforms = 1
+    assert Train(cfg, "v2", "v1", runner=runner, clock=clock).run() == FAILED
+    assert sorted(runner.commands("rollback")) == ["rollback eu-west v1", "rollback us-east v1"]
+
+
+def test_resume_skips_succeeded_platforms(tmp_path):
     cfg = make_cfg(tmp_path)
     clock = FakeClock(dt("2026-10-26T14:00"))
     runner = FakeRunner(clock, fail={"deploy eu-west": 1})
@@ -214,46 +248,45 @@ def test_resume_skips_succeeded_regions(tmp_path):
     assert runner2.commands("deploy") == ["deploy eu-west v2"]
 
 
-def test_abort_and_resume(tmp_path):
+def test_brake_and_resume(tmp_path):
     cfg = make_cfg(tmp_path)
     clock = FakeClock(dt("2026-10-26T14:00"))
 
-    def abort_after_canary(cmd):
-        if cmd.startswith("health us-canary"):
-            abort_path(cfg, "v2").write_text("now")
+    def brake_after_canary(cmd):
+        if cmd.startswith("inspect us-canary"):
+            brake_path(cfg, "v2").write_text("now")
 
-    runner = FakeRunner(clock, on_call=abort_after_canary)
+    runner = FakeRunner(clock, on_call=brake_after_canary)
     train = Train(cfg, "v2", "v1", runner=runner, clock=clock)
     assert train.run() == ABORTED
-    assert train.state.data["regions"]["us-canary"]["status"] == ABORTED
+    assert train.state.data["platforms"]["us-canary"]["status"] == ABORTED
 
     runner2 = FakeRunner(clock)
     assert Train(cfg, "v2", runner=runner2, clock=clock).run() == SUCCEEDED
     assert "deploy us-canary v2" in runner2.commands("deploy")
 
 
-def test_window_wait_timeout_fails_region(tmp_path):
-    cfg = make_cfg(tmp_path, train__window_wait_timeout="1h")
+def test_max_hold_fails_platform(tmp_path):
+    cfg = make_cfg(tmp_path, train__max_hold="1h")
     clock = FakeClock(dt("2026-10-22T21:00"))
     runner = FakeRunner(clock)
     train = Train(cfg, "v2", runner=runner, clock=clock)
     assert train.run() == FAILED
-    assert "window_wait_timeout" in train.state.data["regions"]["us-canary"]["message"]
+    assert "max_hold" in train.state.data["platforms"]["us-canary"]["message"]
     assert not runner.commands("deploy")
 
 
-def test_plan_projects_schedule(tmp_path):
+def test_timetable_projection(tmp_path):
     cfg = make_cfg(tmp_path)
-    waves = plan(cfg, dt("2026-10-22T21:00"), timedelta(minutes=10))
-    canary = waves[0][1][0]
+    stops = project(cfg, dt("2026-10-22T21:00"), timedelta(minutes=10))
+    canary = stops[0][1][0]
     assert canary.start == dt("2026-10-26T13:00")
     assert canary.end == dt("2026-10-26T13:25")
-    assert {p.region.name: p.start for p in waves[1][1]} == {
+    assert {p.platform.name: p.start for p in stops[1][1]} == {
         "us-east": dt("2026-10-26T13:25"), "eu-west": dt("2026-10-26T13:25")}
 
 
-
-def test_halt_interrupts_window_wait_sleep(tmp_path):
+def test_halt_interrupts_hold_sleep(tmp_path):
     class CountingClock(FakeClock):
         sleeps = 0
 
@@ -263,9 +296,9 @@ def test_halt_interrupts_window_wait_sleep(tmp_path):
 
     clock = CountingClock(dt("2026-10-26T14:00"))
     train = Train(make_cfg(tmp_path), "v2", runner=FakeRunner(clock), clock=clock)
-    train._halt.set()  # another region in the wave failed
-    with pytest.raises(AbortRequested):
+    train._halt.set()  # another platform at the stop failed
+    with pytest.raises(BrakeApplied):
         train._sleep(300, stop_on_halt=True)
     assert clock.sleeps == 0
-    train._sleep(10)  # in-flight work (bake) ignores the halt and finishes
+    train._sleep(10)  # in-flight work (dwell) ignores the halt and finishes
     assert clock.sleeps == 2

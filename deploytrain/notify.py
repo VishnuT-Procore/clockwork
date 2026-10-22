@@ -13,26 +13,34 @@ log = logging.getLogger("deploytrain")
 
 EVENTS = (
     "train_started", "train_resumed", "train_finished",
-    "wave_started", "wave_completed", "wave_awaiting_approval", "wave_approved",
-    "region_waiting", "region_deploying", "region_succeeded",
-    "region_failed", "region_rolled_back",
+    "stop_started", "stop_completed", "stop_at_signal", "signal_cleared",
+    "platform_held", "platform_deploying", "platform_succeeded",
+    "platform_failed", "platform_rolled_back",
 )
-DEFAULT_EVENTS = frozenset(EVENTS) - {"region_deploying"}
+# Pre-rename event names, still accepted in `events:`.
+LEGACY_EVENTS = {
+    "wave_started": "stop_started", "wave_completed": "stop_completed",
+    "wave_awaiting_approval": "stop_at_signal", "wave_approved": "signal_cleared",
+    "region_waiting": "platform_held", "region_deploying": "platform_deploying",
+    "region_succeeded": "platform_succeeded", "region_failed": "platform_failed",
+    "region_rolled_back": "platform_rolled_back",
+}
+DEFAULT_EVENTS = frozenset(EVENTS) - {"platform_deploying"}
 # Events posted to the channel (not just the thread) in bot mode.
-BROADCAST_EVENTS = frozenset({"region_failed", "train_finished", "wave_awaiting_approval"})
+BROADCAST_EVENTS = frozenset({"platform_failed", "train_finished", "stop_at_signal"})
 
 STATUS_EMOJI = {
-    "pending": ":white_circle:",
-    "waiting": ":hourglass_flowing_sand:",
+    "scheduled": ":white_circle:",
+    "held": ":vertical_traffic_light:",
     "deploying": ":rocket:",
-    "baking": ":stopwatch:",
+    "dwelling": ":stopwatch:",
     "succeeded": ":white_check_mark:",
     "failed": ":x:",
     "rolled_back": ":rewind:",
     "rollback_failed": ":rotating_light:",
     "aborted": ":octagonal_sign:",
-    "running": ":steam_locomotive:",
-    "awaiting_approval": ":raised_hand:",
+    "en_route": ":steam_locomotive:",
+    "at_signal": ":vertical_traffic_light:",
 }
 
 SLACK_API = "https://slack.com/api/"
@@ -60,12 +68,13 @@ class SlackSettings:
     mention_on_failure: str = ""
     events: frozenset = DEFAULT_EVENTS
     timeout: float = 10.0
-    ui_url: str = ""  # if set, approval requests link to the web UI
+    ui_url: str = ""  # if set, signal messages link to the web UI
 
     @classmethod
     def from_config(cls, raw: dict) -> "SlackSettings":
         events = raw.get("events")
         if events is not None:
+            events = [LEGACY_EVENTS.get(e, e) for e in events]
             unknown = set(events) - set(EVENTS)
             if unknown:
                 raise ValueError(f"unknown slack events {sorted(unknown)}; valid: {list(EVENTS)}")
@@ -134,18 +143,18 @@ class SlackNotifier(Notifier):
     def _header(self) -> str:
         st = self._state()
         prev = f" (rollback target `{st['previous_version']}`)" if st.get("previous_version") else ""
-        status = st.get("status", "running")
+        status = st.get("status", "en_route")
         return (f"{STATUS_EMOJI.get(status, '')} Deployment train *{st['train']}* "
-                f"`{st['version']}`{prev}: *{status.upper()}*")
+                f"`{st['version']}`{prev}: *{status.replace('_', ' ').upper()}*")
 
     def _summary_blocks(self) -> list[dict]:
         st = self._state()
         lines = []
-        for wave in self.train.cfg.waves:
-            regions = "   ".join(
-                f"{STATUS_EMOJI.get(st['regions'][r.name]['status'], '')} {r.name}"
-                for r in wave.regions)
-            lines.append(f"*{wave.name}*   {regions}")
+        for stop in self.train.cfg.stops:
+            platforms = "   ".join(
+                f"{STATUS_EMOJI.get(st['platforms'][p.name]['status'], '')} {p.name}"
+                for p in stop.platforms)
+            lines.append(f"*{stop.name}*   {platforms}")
         return [
             {"type": "section", "text": {"type": "mrkdwn", "text": self._header()}},
             {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}},
@@ -154,38 +163,38 @@ class SlackNotifier(Notifier):
     def format(self, event: str, ctx: dict) -> str:
         st = self._state()
         version, prev = st["version"], st.get("previous_version") or "previous version"
-        region = f"*{ctx['region']}*" if ctx.get("region") else ""
+        platform = f"*{ctx['platform']}*" if ctx.get("platform") else ""
         mention = f" {self.settings.mention_on_failure}" if self.settings.mention_on_failure else ""
         if event == "train_started":
-            waves = " → ".join(w.name for w in self.train.cfg.waves)
-            return f":steam_locomotive: Train started for `{version}`. Waves: {waves}"
+            stops = " → ".join(s.name for s in self.train.cfg.stops)
+            return f":steam_locomotive: Train departed with `{version}`. Calling at: {stops}"
         if event == "train_resumed":
-            return f":repeat: Train resumed for `{version}`"
-        if event == "wave_started":
-            return f":arrow_forward: Wave *{ctx['wave']}* starting: {', '.join(ctx['regions'])}"
-        if event == "wave_awaiting_approval":
-            link = f" <{self.settings.ui_url}|Approve in the UI>" if self.settings.ui_url else ""
-            return (f":raised_hand: Wave *{ctx['wave']}* is waiting for approval "
-                    f"({', '.join(ctx['regions'])}).{link}")
-        if event == "wave_approved":
-            return f":ok_hand: Wave *{ctx['wave']}* approved by *{ctx['by']}*"
-        if event == "wave_completed":
-            return f":checkered_flag: Wave *{ctx['wave']}* complete"
-        if event == "region_waiting":
-            return f":hourglass_flowing_sand: {region} {ctx['message']}"
-        if event == "region_deploying":
-            return f":rocket: {region} deploying `{version}`"
-        if event == "region_succeeded":
-            return f":white_check_mark: {region} healthy on `{version}`"
-        if event == "region_failed":
-            text = f":x: {region} failed: {ctx['error']}{mention}"
+            return f":repeat: Train resumed its journey with `{version}`"
+        if event == "stop_started":
+            return f":station: Arriving at *{ctx['stop']}*: {', '.join(ctx['platforms'])}"
+        if event == "stop_at_signal":
+            link = f" <{self.settings.ui_url}|Clear it in the UI>" if self.settings.ui_url else ""
+            return (f":vertical_traffic_light: Signal at *{ctx['stop']}* is red: someone needs to "
+                    f"clear it before deploying to {', '.join(ctx['platforms'])}.{link}")
+        if event == "signal_cleared":
+            return f":large_green_circle: Signal at *{ctx['stop']}* cleared by *{ctx['by']}*"
+        if event == "stop_completed":
+            return f":checkered_flag: Departed *{ctx['stop']}*"
+        if event == "platform_held":
+            return f":vertical_traffic_light: {platform} {ctx['message']}"
+        if event == "platform_deploying":
+            return f":rocket: {platform} deploying `{version}`"
+        if event == "platform_succeeded":
+            return f":white_check_mark: {platform} healthy on `{version}`"
+        if event == "platform_failed":
+            text = f":x: {platform} failed: {ctx['error']}{mention}"
             if ctx.get("output"):
                 text += f"\n```{ctx['output'][-1500:]}```"
             return text
-        if event == "region_rolled_back":
+        if event == "platform_rolled_back":
             if ctx["ok"]:
-                return f":rewind: {region} rolled back to `{prev}`"
-            return f":rotating_light: {region} rollback to `{prev}` FAILED{mention}"
+                return f":rewind: {platform} rolled back to `{prev}`"
+            return f":rotating_light: {platform} rollback to `{prev}` FAILED{mention}"
         if event == "train_finished":
             status = ctx["status"]
             emoji = {"succeeded": ":tada:", "failed": ":x:", "aborted": ":octagonal_sign:"}.get(status, "")

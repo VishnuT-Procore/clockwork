@@ -1,7 +1,7 @@
 [project]
 name = "deploytrain"
 version = "0.1.0"
-description = "Region-by-region production deployment train with configurable time windows"
+description = "A deployment train for production: roll releases out stop by stop, within each platform's timetable"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -11,7 +11,7 @@ dependencies = [
     "PyYAML>=6",
     "tzdata; sys_platform == 'win32'",  # Windows has no system timezone database
 ]
-keywords = ["deployment", "release", "rollout", "progressive-delivery", "devops", "sre", "change-window"]
+keywords = ["deployment", "release", "rollout", "progressive-delivery", "devops", "sre", "change-window", "release-train", "deployment-train"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

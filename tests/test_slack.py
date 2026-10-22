@@ -34,7 +34,7 @@ class FakeSlack:
 
 def run_train(tmp_path, notifier, fail=None, **cfg_overrides):
     cfg = make_cfg(tmp_path, **cfg_overrides)
-    cfg.waves[1].max_parallel = 1
+    cfg.stops[1].parallel_platforms = 1
     clock = FakeClock(dt("2026-10-26T14:00"))
     train = Train(cfg, "v2", "v1", runner=FakeRunner(clock, fail=fail), clock=clock,
                   notifier=notifier)
@@ -55,9 +55,9 @@ def test_bot_mode_threads_and_updates_summary(tmp_path):
     replies = [p for p in fake.posts() if "thread_ts" in p]
     assert all(p["thread_ts"] == "1.000" and p["channel"] == "C123" for p in replies)
     texts = fake.thread_texts()
-    assert any("Train started" in t for t in texts)
+    assert any("Train departed" in t for t in texts)
     assert any("*us-canary* healthy on `v2`" in t for t in texts)
-    assert not any("deploying" in t for t in texts)  # region_deploying is off by default
+    assert not any("deploying" in t for t in texts)  # platform_deploying is off by default
     final = [p for m, p, _ in fake.calls if m == "chat.update"][-1]
     assert "SUCCEEDED" in final["text"]
     assert final["blocks"][1]["text"]["text"].count(":white_check_mark:") == 3
@@ -67,7 +67,7 @@ def test_bot_mode_threads_and_updates_summary(tmp_path):
 def test_failure_is_broadcast_with_mention_and_output(tmp_path):
     fake = FakeSlack()
     _, status = run_train(tmp_path, bot(fake, mention_on_failure="<!here>"),
-                          fail={"health us-east": 1})
+                          fail={"inspect us-east": 1})
     assert status == FAILED
     failed = next(p for p in fake.posts() if p.get("text", "").startswith(":x: *us-east*"))
     assert failed["reply_broadcast"] is True
@@ -84,7 +84,7 @@ def test_resume_reuses_thread(tmp_path):
     Train(cfg, "v2", runner=FakeRunner(clock), clock=clock,
           notifier=bot(fake2)).run(retry_failed=True)
     assert all(p.get("thread_ts") == "1.000" for p in fake2.posts())  # no new parent
-    assert any("resumed" in t for t in fake2.thread_texts())
+    assert any("resumed its journey" in t for t in fake2.thread_texts())
 
 
 def test_webhook_mode_respects_event_filter(tmp_path):
@@ -94,7 +94,7 @@ def test_webhook_mode_respects_event_filter(tmp_path):
     run_train(tmp_path, n)
     texts = [p["text"] for _, p, _ in fake.calls]
     assert len(texts) == 2
-    assert texts[0].startswith(":steam_locomotive: Train started")
+    assert texts[0].startswith(":steam_locomotive: Train departed")
     assert texts[1].startswith("[svc `v2`] :tada:")
 
 
@@ -122,3 +122,27 @@ def test_config_rejects_unknown_event():
             "notifications": {"slack": {"events": ["nope"]}},
             "waves": [{"regions": ["a"]}],
         })
+
+
+def test_signal_events_and_legacy_event_names(tmp_path):
+    fake = FakeSlack()
+    n = SlackNotifier(SlackSettings.from_config({
+        "events": ["wave_awaiting_approval", "signal_cleared"], "ui_url": "https://dt.example"}),
+        webhook_url="https://hooks.slack.com/x", post=fake)
+    assert n.settings.events == {"stop_at_signal", "signal_cleared"}
+    cfg = make_cfg(tmp_path)
+    cfg.stops[1].signal = True
+    clock = FakeClock(dt("2026-10-26T14:00"))
+    train = Train(cfg, "v2", "v1", runner=FakeRunner(clock), clock=clock, notifier=n)
+
+    def clear_when_red(seconds, _orig=clock.sleep):
+        if train.state.data.get("status") == "at_signal":
+            from deploytrain.train import clear_signal
+            clear_signal(cfg, "v2", "s1", "dana")
+        _orig(seconds)
+
+    clock.sleep = clear_when_red
+    assert train.run() == SUCCEEDED
+    texts = [p["text"] for _, p, _ in fake.calls]
+    assert "Signal at *s1* is red" in texts[0] and "<https://dt.example|Clear it in the UI>" in texts[0]
+    assert "cleared by *dana*" in texts[1]

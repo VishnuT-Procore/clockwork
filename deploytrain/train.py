@@ -1,4 +1,4 @@
-"""The deployment train orchestrator: waves in sequence, regions gated by their windows."""
+"""The deployment train: stops in sequence, platforms served within their timetables."""
 from __future__ import annotations
 
 import json
@@ -12,24 +12,30 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from .config import Region, TrainConfig, Wave
+from ._compat import LEGACY_STATUS
+from .config import Platform, Stop, TrainConfig
 from .notify import Notifier, build_notifier
-from .windows import NoWindowError, format_duration
+from .timetable import NoServiceError, format_duration
 
 log = logging.getLogger("deploytrain")
 
-PENDING, WAITING, DEPLOYING, BAKING = "pending", "waiting", "deploying", "baking"
+# Platform statuses.
+SCHEDULED, HELD, DEPLOYING, DWELLING = "scheduled", "held", "deploying", "dwelling"
 SUCCEEDED, FAILED, ROLLED_BACK, ROLLBACK_FAILED, ABORTED = (
     "succeeded", "failed", "rolled_back", "rollback_failed", "aborted",
 )
-RUNNING, AWAITING_APPROVAL = "running", "awaiting_approval"
-ACTIVE_STATUSES = (RUNNING, AWAITING_APPROVAL)
-APPROVAL_POLL_SECONDS = 5.0
-MAX_SLEEP_CHUNK = 5.0  # seconds; bounds how quickly an abort or halt is noticed
-HEALTH_CHECK_TIMEOUT = timedelta(minutes=5)
+# Train statuses (also SUCCEEDED, FAILED, ABORTED).
+EN_ROUTE, AT_SIGNAL = "en_route", "at_signal"
+ACTIVE_STATUSES = (EN_ROUTE, AT_SIGNAL)
+# Signal states at a stop.
+SIGNAL_WAITING, SIGNAL_CLEARED = "waiting", "cleared"
+
+SIGNAL_POLL_SECONDS = 5.0
+MAX_SLEEP_CHUNK = 5.0  # seconds; bounds how quickly the brake or a halt is noticed
+INSPECTION_TIMEOUT = timedelta(minutes=5)
 
 
 class Clock:
@@ -62,11 +68,11 @@ def shell_runner(command: str, env: dict[str, str], timeout: float) -> CommandRe
         return CommandResult(124, out + f"\n[timed out after {timeout:.0f}s]")
 
 
-class AbortRequested(Exception):
-    pass
+class BrakeApplied(Exception):
+    """The emergency brake was pulled, or the train halted because a platform failed."""
 
 
-class RegionFailed(Exception):
+class PlatformFailed(Exception):
     def __init__(self, message: str, output: str = ""):
         super().__init__(message)
         self.output = output
@@ -74,6 +80,42 @@ class RegionFailed(Exception):
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat(timespec="seconds") if dt else None
+
+
+def migrate_state(data: dict) -> dict:
+    """Upgrade a state file written before the railway rename, in place."""
+    if "regions" in data and "platforms" not in data:
+        data["platforms"] = data.pop("regions")
+        for p in data["platforms"].values():
+            p["stop"] = p.pop("wave", None)
+    if "waves" in data and "stops" not in data:
+        data["stops"] = data.pop("waves")
+        for s in data["stops"].values():
+            approval = s.pop("approval", None)
+            s["signal"] = None if not approval else {
+                "status": SIGNAL_CLEARED if approval.get("status") == "approved" else SIGNAL_WAITING,
+                "requested_at": approval.get("requested_at"),
+                "cleared_by": approval.get("by"),
+                "cleared_at": approval.get("approved_at"),
+            }
+    for e in data.get("events", []):
+        if "region" in e:
+            e["platform"] = e.pop("region")
+    if "status" in data:
+        data["status"] = LEGACY_STATUS.get(data["status"], data["status"])
+    for p in data.get("platforms", {}).values():
+        p["status"] = LEGACY_STATUS.get(p["status"], p["status"])
+    return data
+
+
+def read_state(path: Path) -> dict | None:
+    """Read a state file (migrating old formats); None if missing or mid-write."""
+    if not path.exists():
+        return None
+    try:
+        return migrate_state(json.loads(path.read_text()))
+    except ValueError:
+        return None
 
 
 class StateStore:
@@ -86,7 +128,7 @@ class StateStore:
 
     def load(self) -> bool:
         if self.path.exists():
-            self.data = json.loads(self.path.read_text())
+            self.data = migrate_state(json.loads(self.path.read_text()))
             return True
         return False
 
@@ -97,38 +139,47 @@ class StateStore:
             tmp.write_text(json.dumps(self.data, indent=2))
             tmp.replace(self.path)
 
-    def region(self, name: str) -> dict:
-        return self.data["regions"][name]
+    def platform(self, name: str) -> dict:
+        return self.data["platforms"][name]
 
-    def update_region(self, name: str, **fields) -> None:
+    def update_platform(self, name: str, **fields) -> None:
         with self.lock:
-            self.data["regions"][name].update(fields)
+            self.data["platforms"][name].update(fields)
             self.save()
 
-    def event(self, now: datetime, message: str, region: str | None = None) -> None:
+    def event(self, now: datetime, message: str, platform: str | None = None) -> None:
         with self.lock:
             self.data.setdefault("events", []).append(
-                {"at": _iso(now), "region": region, "message": message})
+                {"at": _iso(now), "platform": platform, "message": message})
             self.save()
-        log.info("%s%s", f"[{region}] " if region else "", message)
+        log.info("%s%s", f"[{platform}] " if platform else "", message)
+
+
+def _safe(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
 
 
 def state_path(cfg: TrainConfig, version: str) -> Path:
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in version)
-    return cfg.state_dir / f"{cfg.name}-{safe}.json"
+    return cfg.state_dir / f"{cfg.name}-{_safe(version)}.json"
 
 
-def abort_path(cfg: TrainConfig, version: str) -> Path:
-    return state_path(cfg, version).with_suffix(".abort")
+def brake_path(cfg: TrainConfig, version: str) -> Path:
+    return state_path(cfg, version).with_suffix(".brake")
 
 
-def approval_path(cfg: TrainConfig, version: str, wave: str) -> Path:
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in wave)
-    return state_path(cfg, version).with_suffix(f".approve.{safe}")
+def signal_path(cfg: TrainConfig, version: str, stop: str) -> Path:
+    return state_path(cfg, version).with_suffix(f".signal.{_safe(stop)}")
 
 
-def request_approval(cfg: TrainConfig, version: str, wave: str, by: str) -> Path:
-    path = approval_path(cfg, version, wave)
+def apply_brake(cfg: TrainConfig, version: str, by: str) -> Path:
+    path = brake_path(cfg, version)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"by": by, "at": _iso(datetime.now(timezone.utc))}))
+    return path
+
+
+def clear_signal(cfg: TrainConfig, version: str, stop: str, by: str) -> Path:
+    path = signal_path(cfg, version, stop)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"by": by, "at": _iso(datetime.now(timezone.utc))}))
     return path
@@ -176,7 +227,7 @@ class Train:
         self.clock = clock or Clock()
         self.dry_run = dry_run
         self.state = StateStore(state_path(cfg, version))
-        self.abort_file = abort_path(cfg, version)
+        self.brake_file = brake_path(cfg, version)
         self._halt = threading.Event()
         if notifier is None:
             notifier = Notifier() if dry_run else build_notifier(cfg.slack)
@@ -200,41 +251,41 @@ class Train:
                 return
             if not force and st.get("pid") != os.getpid() and owner_alive(st):
                 raise RuntimeError(
-                    f"train {self.version} is already running (pid {st['pid']} on {st.get('host')}); "
+                    f"train {self.version} is already en route (pid {st['pid']} on {st.get('host')}); "
                     "use --force only if that process is really gone")
-            failed = [n for n, r in st["regions"].items()
-                      if r["status"] in (FAILED, ROLLED_BACK, ROLLBACK_FAILED)]
+            failed = [n for n, p in st["platforms"].items()
+                      if p["status"] in (FAILED, ROLLED_BACK, ROLLBACK_FAILED)]
             if failed and not retry_failed:
                 raise RuntimeError(
-                    f"previous run failed in {failed}; fix the issue and re-run with --retry-failed")
-            for r in st["regions"].values():
-                if r["status"] != SUCCEEDED:
-                    r["status"] = PENDING
-                    r.pop("output", None)
+                    f"previous departure failed at {failed}; fix the issue and re-run with --retry-failed")
+            for p in st["platforms"].values():
+                if p["status"] != SUCCEEDED:
+                    p["status"] = SCHEDULED
+                    p.pop("output", None)
             if self.previous_version and not st.get("previous_version"):
                 st["previous_version"] = self.previous_version
             self.previous_version = st.get("previous_version")
-            st["status"] = RUNNING
+            st["status"] = EN_ROUTE
             st.update(pid=os.getpid(), host=socket.gethostname())
-            self.state.event(now, "resuming train")
+            self.state.event(now, "train resumed its journey")
             self._notify("train_resumed")
             return
         self.state.data = {
             "train": self.cfg.name,
             "version": self.version,
             "previous_version": self.previous_version,
-            "status": RUNNING,
+            "status": EN_ROUTE,
             "pid": os.getpid(),
             "host": socket.gethostname(),
             "started_at": _iso(now),
             "finished_at": None,
-            "waves": {w.name: {"finished_at": None, "approval": None} for w in self.cfg.waves},
-            "regions": {r.name: {"wave": r.wave, "status": PENDING, "started_at": None,
-                                 "finished_at": None, "message": ""}
-                        for r in self.cfg.regions},
+            "stops": {s.name: {"finished_at": None, "signal": None} for s in self.cfg.stops},
+            "platforms": {p.name: {"stop": p.stop, "status": SCHEDULED, "started_at": None,
+                                   "finished_at": None, "message": ""}
+                          for p in self.cfg.platforms},
             "events": [],
         }
-        self.state.event(now, f"train {self.cfg.name} started for version {self.version}")
+        self.state.event(now, f"train {self.cfg.name} departed with version {self.version}")
         self._notify("train_started")
 
     def _finish(self, status: str, message: str) -> str:
@@ -247,253 +298,262 @@ class Train:
 
     # ---- helpers -----------------------------------------------------------
 
-    def _check_abort(self) -> None:
-        if self.abort_file.exists():
-            raise AbortRequested()
+    def _check_brake(self) -> None:
+        if self.brake_file.exists():
+            raise BrakeApplied()
 
     def _sleep(self, seconds: float, stop_on_halt: bool = False) -> None:
         while seconds > 0:
-            self._check_abort()
+            self._check_brake()
             if stop_on_halt and self._halt.is_set():
-                raise AbortRequested()
+                raise BrakeApplied()
             chunk = min(seconds, MAX_SLEEP_CHUNK)
             self.clock.sleep(chunk)
             seconds -= chunk
-        self._check_abort()
+        self._check_brake()
 
-    def _vars(self, region: Region) -> dict[str, str]:
+    def _vars(self, platform: Platform) -> dict[str, str]:
         return {
             "train": self.cfg.name,
-            "region": region.name,
-            "wave": region.wave,
+            "platform": platform.name,
+            "stop": platform.stop,
             "version": self.version,
             "previous_version": self.previous_version or "",
-            **{k: str(v) for k, v in region.vars.items()},
+            # Pre-rename names, so existing command templates keep working.
+            "region": platform.name,
+            "wave": platform.stop,
+            **{k: str(v) for k, v in platform.vars.items()},
         }
 
-    def _run(self, kind: str, template: str, region: Region, timeout: timedelta) -> CommandResult:
-        variables = self._vars(region)
+    def _run(self, kind: str, template: str, platform: Platform, timeout: timedelta) -> CommandResult:
+        variables = self._vars(platform)
         command = template.format_map(variables)
         env = {f"DT_{k.upper()}": v for k, v in variables.items()}
         if self.dry_run:
-            self.state.event(self.clock.now(), f"[dry-run] {kind}: {command}", region.name)
+            self.state.event(self.clock.now(), f"[dry-run] {kind}: {command}", platform.name)
             return CommandResult(0, "")
-        self.state.event(self.clock.now(), f"{kind}: {command}", region.name)
+        self.state.event(self.clock.now(), f"{kind}: {command}", platform.name)
         result = self.runner(command, env, timeout.total_seconds())
         if result.output.strip():
             for line in result.output.strip().splitlines()[-20:]:
-                log.info("[%s]   | %s", region.name, line)
+                log.info("[%s]   | %s", platform.name, line)
         return result
 
-    # ---- per-region lifecycle ----------------------------------------------
+    # ---- per-platform lifecycle --------------------------------------------
 
-    def _wait_for_window(self, region: Region) -> None:
+    def _wait_for_service(self, platform: Platform) -> None:
         started = self.clock.now()
         announced = None
+        tt = platform.timetable
         while True:
-            self._check_abort()
+            self._check_brake()
             if self._halt.is_set():
-                raise AbortRequested()
+                raise BrakeApplied()
             now = self.clock.now()
             try:
-                nxt = region.window.next_start(now)
-            except NoWindowError as e:
-                raise RegionFailed(str(e))
+                nxt = tt.next_start(now)
+            except NoServiceError as e:
+                raise PlatformFailed(str(e))
             if nxt <= now:
                 return
-            if nxt - started > self.cfg.window_wait_timeout:
-                raise RegionFailed(
-                    f"next window opens at {_iso(nxt)}, beyond window_wait_timeout "
-                    f"({format_duration(self.cfg.window_wait_timeout)})")
+            if nxt - started > self.cfg.max_hold:
+                raise PlatformFailed(
+                    f"next service starts at {_iso(nxt)}, beyond max_hold "
+                    f"({format_duration(self.cfg.max_hold)})")
             if announced != nxt:
                 announced = nxt
-                local = nxt.astimezone(ZoneInfo(region.window.timezone))
-                blackout = region.window.active_blackout(now)
-                why = f" (blackout: {blackout.reason})" if blackout and blackout.reason else ""
-                msg = (f"waiting for window {region.window.name!r}{why}; opens "
+                local = nxt.astimezone(ZoneInfo(tt.timezone))
+                closure = tt.active_closure(now)
+                why = f" (line closure: {closure.reason})" if closure and closure.reason else ""
+                msg = (f"held at signal: timetable {tt.name!r}{why} resumes service "
                        f"{local:%a %Y-%m-%d %H:%M %Z} (in {format_duration(nxt - now)})")
-                self.state.update_region(region.name, status=WAITING, message=msg)
-                self.state.event(now, msg, region.name)
-                self._notify("region_waiting", region=region.name, message=msg, opens_at=nxt)
+                self.state.update_platform(platform.name, status=HELD, message=msg)
+                self.state.event(now, msg, platform.name)
+                self._notify("platform_held", platform=platform.name, message=msg, opens_at=nxt)
             self._sleep(min((nxt - now).total_seconds(), 300), stop_on_halt=True)
 
-    def _bake(self, region: Region) -> None:
+    def _dwell(self, platform: Platform) -> None:
         cfg = self.cfg
-        deadline = self.clock.now() + region.bake
-        self.state.update_region(region.name, status=BAKING,
-                                 message=f"baking for {format_duration(region.bake)}")
-        if region.bake:
-            self.state.event(self.clock.now(), f"baking for {format_duration(region.bake)}", region.name)
+        deadline = self.clock.now() + platform.dwell
+        self.state.update_platform(platform.name, status=DWELLING,
+                                   message=f"dwelling for {format_duration(platform.dwell)}")
+        if platform.dwell:
+            self.state.event(self.clock.now(), f"dwelling for {format_duration(platform.dwell)}",
+                             platform.name)
         while True:
-            if cfg.health_check_command:
-                res = self._run("health check", cfg.health_check_command, region,
-                                HEALTH_CHECK_TIMEOUT)
+            if cfg.inspection_command:
+                res = self._run("inspection", cfg.inspection_command, platform, INSPECTION_TIMEOUT)
                 if res.returncode != 0:
-                    raise RegionFailed(f"health check failed (exit {res.returncode})", res.output)
+                    raise PlatformFailed(f"inspection failed (exit {res.returncode})", res.output)
             remaining = (deadline - self.clock.now()).total_seconds()
             if remaining <= 0 or self.dry_run:
                 return
-            step = remaining if not cfg.health_check_command else min(
-                remaining, cfg.health_check_interval.total_seconds())
+            step = remaining if not cfg.inspection_command else min(
+                remaining, cfg.inspection_interval.total_seconds())
             self._sleep(step)
 
-    def _rollback(self, region: Region, reason: str) -> None:
+    def _rollback(self, platform: Platform, reason: str) -> None:
         if not self.cfg.rollback_command:
             self.state.event(self.clock.now(), "no rollback_command configured; skipping rollback",
-                             region.name)
+                             platform.name)
             return
-        res = self._run("rollback", self.cfg.rollback_command, region, region.deploy_timeout)
+        res = self._run("rollback", self.cfg.rollback_command, platform, platform.deploy_timeout)
         status = ROLLED_BACK if res.returncode == 0 else ROLLBACK_FAILED
-        self.state.update_region(region.name, status=status,
-                                 message=f"{reason}; rollback {'ok' if res.returncode == 0 else 'FAILED'}")
-        self._notify("region_rolled_back", region=region.name, ok=res.returncode == 0)
+        self.state.update_platform(
+            platform.name, status=status,
+            message=f"{reason}; rollback {'ok' if res.returncode == 0 else 'FAILED'}")
+        self._notify("platform_rolled_back", platform=platform.name, ok=res.returncode == 0)
 
-    def _deploy_region(self, region: Region) -> str:
-        name = region.name
+    def _serve_platform(self, platform: Platform) -> str:
+        name = platform.name
         try:
-            self._wait_for_window(region)
-            self.state.update_region(name, status=DEPLOYING, started_at=_iso(self.clock.now()),
-                                     message=f"deploying {self.version}")
-            self._notify("region_deploying", region=name)
-            res = self._run("deploy", self.cfg.deploy_command, region, region.deploy_timeout)
+            self._wait_for_service(platform)
+            self.state.update_platform(name, status=DEPLOYING, started_at=_iso(self.clock.now()),
+                                       message=f"deploying {self.version}")
+            self._notify("platform_deploying", platform=name)
+            res = self._run("deploy", self.cfg.deploy_command, platform, platform.deploy_timeout)
             if res.returncode != 0:
-                raise RegionFailed(f"deploy failed (exit {res.returncode})", res.output)
-            self._check_abort()
-            self._bake(region)
-            self.state.update_region(name, status=SUCCEEDED, finished_at=_iso(self.clock.now()),
-                                     message=f"{self.version} healthy")
+                raise PlatformFailed(f"deploy failed (exit {res.returncode})", res.output)
+            self._check_brake()
+            self._dwell(platform)
+            self.state.update_platform(name, status=SUCCEEDED, finished_at=_iso(self.clock.now()),
+                                       message=f"{self.version} healthy")
             self.state.event(self.clock.now(), "succeeded", name)
-            self._notify("region_succeeded", region=name)
+            self._notify("platform_succeeded", platform=name)
             return SUCCEEDED
-        except AbortRequested:
-            st = self.state.region(name)["status"]
-            if st in (DEPLOYING, BAKING):
-                self.state.update_region(name, status=ABORTED, message="aborted mid-deploy")
+        except BrakeApplied:
+            st = self.state.platform(name)["status"]
+            if st in (DEPLOYING, DWELLING):
+                self.state.update_platform(name, status=ABORTED, message="aborted mid-deploy")
             else:
-                self.state.update_region(name, status=PENDING, message="not started (train halted)")
+                self.state.update_platform(name, status=SCHEDULED,
+                                           message="not served (train halted)")
             return ABORTED
-        except RegionFailed as e:
+        except PlatformFailed as e:
             self._halt.set()
-            self.state.update_region(name, status=FAILED, finished_at=_iso(self.clock.now()),
-                                     message=str(e), output=e.output.strip()[-2000:])
+            self.state.update_platform(name, status=FAILED, finished_at=_iso(self.clock.now()),
+                                       message=str(e), output=e.output.strip()[-2000:])
             self.state.event(self.clock.now(), f"FAILED: {e}", name)
-            self._notify("region_failed", region=name, error=str(e), output=e.output.strip())
+            self._notify("platform_failed", platform=name, error=str(e), output=e.output.strip())
             if self.cfg.rollback_scope != "none":
-                self._rollback(region, str(e))
+                self._rollback(platform, str(e))
             return FAILED
 
     # ---- train -------------------------------------------------------------
 
-    def _run_wave(self, wave: Wave) -> list[str]:
-        todo = [r for r in wave.regions if self.state.region(r.name)["status"] != SUCCEEDED]
+    def _serve_stop(self, stop: Stop) -> list[str]:
+        todo = [p for p in stop.platforms if self.state.platform(p.name)["status"] != SUCCEEDED]
         if not todo:
             return []
-        self.state.event(self.clock.now(), f"wave {wave.name!r} starting: "
-                         f"{', '.join(r.name for r in todo)} (max_parallel={wave.max_parallel})")
-        self._notify("wave_started", wave=wave.name, regions=[r.name for r in todo])
-        if wave.max_parallel == 1:
-            return [self._deploy_region(r) for r in todo]
-        with ThreadPoolExecutor(max_workers=wave.max_parallel,
-                                thread_name_prefix=f"wave-{wave.name}") as pool:
-            return list(pool.map(self._deploy_region, todo))
+        self.state.event(self.clock.now(), f"arriving at stop {stop.name!r}: "
+                         f"{', '.join(p.name for p in todo)} "
+                         f"(parallel_platforms={stop.parallel_platforms})")
+        self._notify("stop_started", stop=stop.name, platforms=[p.name for p in todo])
+        if stop.parallel_platforms == 1:
+            return [self._serve_platform(p) for p in todo]
+        with ThreadPoolExecutor(max_workers=stop.parallel_platforms,
+                                thread_name_prefix=f"stop-{stop.name}") as pool:
+            return list(pool.map(self._serve_platform, todo))
 
-    def _wait_for_approval(self, wave: Wave, todo: list[Region]) -> None:
-        waves = self.state.data["waves"]
-        info = waves.setdefault(wave.name, {"finished_at": None})
-        if (info.get("approval") or {}).get("status") == "approved":
+    def _wait_for_signal(self, stop: Stop, todo: list[Platform]) -> None:
+        info = self.state.data["stops"].setdefault(stop.name, {"finished_at": None})
+        if (info.get("signal") or {}).get("status") == SIGNAL_CLEARED:
             return
-        path = approval_path(self.cfg, self.version, wave.name)
-        info["approval"] = {"status": "pending", "requested_at": _iso(self.clock.now())}
-        self.state.data["status"] = AWAITING_APPROVAL
-        self.state.event(self.clock.now(), f"wave {wave.name!r} is waiting for approval")
-        self._notify("wave_awaiting_approval", wave=wave.name, regions=[r.name for r in todo])
+        path = signal_path(self.cfg, self.version, stop.name)
+        info["signal"] = {"status": SIGNAL_WAITING, "requested_at": _iso(self.clock.now())}
+        self.state.data["status"] = AT_SIGNAL
+        self.state.event(self.clock.now(),
+                         f"signal at stop {stop.name!r} is red; waiting for someone to clear it")
+        self._notify("stop_at_signal", stop=stop.name, platforms=[p.name for p in todo])
         while not path.exists():
-            self._sleep(APPROVAL_POLL_SECONDS)
+            self._sleep(SIGNAL_POLL_SECONDS)
         try:
             by = json.loads(path.read_text()).get("by") or "unknown"
         except ValueError:
             by = "unknown"
         path.unlink(missing_ok=True)
-        info["approval"] = {**info["approval"], "status": "approved", "by": by,
-                            "approved_at": _iso(self.clock.now())}
-        self.state.data["status"] = RUNNING
-        self.state.event(self.clock.now(), f"wave {wave.name!r} approved by {by}")
-        self._notify("wave_approved", wave=wave.name, by=by)
+        info["signal"] = {**info["signal"], "status": SIGNAL_CLEARED, "cleared_by": by,
+                          "cleared_at": _iso(self.clock.now())}
+        self.state.data["status"] = EN_ROUTE
+        self.state.event(self.clock.now(), f"signal at stop {stop.name!r} cleared by {by}")
+        self._notify("signal_cleared", stop=stop.name, by=by)
 
-    def _rollback_succeeded(self, regions: list[Region], reason: str) -> None:
-        for r in reversed(regions):
-            if self.state.region(r.name)["status"] == SUCCEEDED:
-                self._rollback(r, reason)
+    def _rollback_succeeded(self, platforms: list[Platform], reason: str) -> None:
+        for p in reversed(platforms):
+            if self.state.platform(p.name)["status"] == SUCCEEDED:
+                self._rollback(p, reason)
 
     def run(self, retry_failed: bool = False, force: bool = False) -> str:
-        self.abort_file.unlink(missing_ok=True)
+        self.brake_file.unlink(missing_ok=True)
         self._init_state(retry_failed, force)
         if self.state.data["status"] == SUCCEEDED:
-            log.info("train already succeeded for %s", self.version)
+            log.info("train already arrived for %s", self.version)
             return SUCCEEDED
-        completed: list[Region] = []
+        served: list[Platform] = []
+        stops_state = self.state.data["stops"]
         try:
-            for i, wave in enumerate(self.cfg.waves):
-                if i > 0 and wave.gap:
-                    prev = self.state.data["waves"][self.cfg.waves[i - 1].name]["finished_at"]
+            for i, stop in enumerate(self.cfg.stops):
+                if i > 0 and stop.headway:
+                    prev = stops_state[self.cfg.stops[i - 1].name]["finished_at"]
                     if prev:
-                        ready = datetime.fromisoformat(prev) + wave.gap
+                        ready = datetime.fromisoformat(prev) + stop.headway
                         wait = (ready - self.clock.now()).total_seconds()
                         if wait > 0:
-                            self.state.event(self.clock.now(),
-                                             f"gap before wave {wave.name!r}: {format_duration(wave.gap)}")
+                            self.state.event(self.clock.now(), f"headway before stop {stop.name!r}: "
+                                             f"{format_duration(stop.headway)}")
                             self._sleep(wait)
-                todo = [r for r in wave.regions if self.state.region(r.name)["status"] != SUCCEEDED]
-                if wave.approval and todo:
-                    self._wait_for_approval(wave, todo)
-                results = self._run_wave(wave)
+                todo = [p for p in stop.platforms
+                        if self.state.platform(p.name)["status"] != SUCCEEDED]
+                if stop.signal and todo:
+                    self._wait_for_signal(stop, todo)
+                results = self._serve_stop(stop)
                 if FAILED in results:
-                    reason = f"failure in wave {wave.name!r}"
-                    if self.cfg.rollback_scope == "wave":
-                        self._rollback_succeeded(wave.regions, reason)
+                    reason = f"failure at stop {stop.name!r}"
+                    if self.cfg.rollback_scope == "stop":
+                        self._rollback_succeeded(stop.platforms, reason)
                     elif self.cfg.rollback_scope == "train":
-                        self._rollback_succeeded(completed + wave.regions, reason)
+                        self._rollback_succeeded(served + stop.platforms, reason)
                     return self._finish(FAILED, f"train halted: {reason}")
                 if ABORTED in results:
-                    raise AbortRequested()
-                completed.extend(wave.regions)
-                if results or not self.state.data["waves"][wave.name]["finished_at"]:
-                    self.state.data["waves"][wave.name]["finished_at"] = _iso(self.clock.now())
-                    self.state.event(self.clock.now(), f"wave {wave.name!r} complete")
-                    self._notify("wave_completed", wave=wave.name)
-        except AbortRequested:
-            return self._finish(ABORTED, "train aborted; re-run the same command to resume")
-        return self._finish(SUCCEEDED, f"train complete: {self.version} is live in all regions")
+                    raise BrakeApplied()
+                served.extend(stop.platforms)
+                if results or not stops_state[stop.name]["finished_at"]:
+                    stops_state[stop.name]["finished_at"] = _iso(self.clock.now())
+                    self.state.event(self.clock.now(), f"departed stop {stop.name!r}")
+                    self._notify("stop_completed", stop=stop.name)
+        except BrakeApplied:
+            return self._finish(ABORTED, "emergency brake applied; re-run the same command to resume")
+        return self._finish(SUCCEEDED, f"train arrived: {self.version} is live on all platforms")
 
 
-# ---- planning ---------------------------------------------------------------
+# ---- timetable projection ---------------------------------------------------
 
 @dataclass
-class PlannedRegion:
-    region: Region
+class PlannedPlatform:
+    platform: Platform
     earliest: datetime
     start: datetime
     end: datetime
 
 
-def plan(cfg: TrainConfig, start_at: datetime,
-         deploy_duration: timedelta | None = None) -> list[tuple[Wave, list[PlannedRegion]]]:
-    """Project when each region would deploy if every step succeeds on time."""
+def project(cfg: TrainConfig, start_at: datetime,
+            deploy_duration: timedelta | None = None) -> list[tuple[Stop, list[PlannedPlatform]]]:
+    """Project when each platform would be served if every step succeeds on time."""
     duration = deploy_duration if deploy_duration is not None else cfg.estimated_deploy_duration
     out = []
     t = start_at
-    for i, wave in enumerate(cfg.waves):
+    for i, stop in enumerate(cfg.stops):
         if i > 0:
-            t = t + wave.gap
-        slots = [t] * wave.max_parallel
+            t = t + stop.headway
+        slots = [t] * stop.parallel_platforms
         planned = []
-        for region in wave.regions:
+        for platform in stop.platforms:
             slot = min(range(len(slots)), key=lambda k: slots[k])
             earliest = slots[slot]
-            start = region.window.next_start(earliest)
-            end = start + duration + region.bake
+            start = platform.timetable.next_start(earliest)
+            end = start + duration + platform.dwell
             slots[slot] = end
-            planned.append(PlannedRegion(region, earliest, start, end))
+            planned.append(PlannedPlatform(platform, earliest, start, end))
         t = max(p.end for p in planned)
-        out.append((wave, planned))
+        out.append((stop, planned))
     return out

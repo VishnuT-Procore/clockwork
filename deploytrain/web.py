@@ -1,8 +1,8 @@
 """Web UI: a small JSON API over the train state files plus a single-page dashboard.
 
-The UI never writes a train's state file. Runs are separate `deploytrain run` processes,
-and actions use the same files the CLI uses (abort and approve marker files). The UI can
-be restarted at any time without affecting running trains.
+The UI never writes a train's state file. Departures are separate `deploytrain depart`
+processes, and actions use the same marker files the CLI uses (brake, signal). The UI
+can be restarted at any time without affecting trains en route.
 """
 from __future__ import annotations
 
@@ -21,11 +21,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .config import TrainConfig
+from .timetable import NoServiceError, format_duration
 from .train import (
-    ACTIVE_STATUSES, SUCCEEDED, abort_path, approval_path, owner_alive, plan, request_approval,
-    state_path,
+    ACTIVE_STATUSES, SIGNAL_WAITING, SUCCEEDED, apply_brake, brake_path, clear_signal,
+    owner_alive, project, read_state, signal_path, state_path,
 )
-from .windows import NoWindowError, format_duration
 
 log = logging.getLogger("deploytrain")
 
@@ -72,13 +72,7 @@ class App:
     # ---- paths -------------------------------------------------------------
 
     def _state(self, version: str) -> dict | None:
-        path = state_path(self.cfg, version)
-        if not path.exists():
-            return None
-        try:
-            return json.loads(path.read_text())
-        except ValueError:  # mid-write; atomic replace makes this rare
-            return None
+        return read_state(state_path(self.cfg, version))
 
     def _log_path(self, version: str) -> Path:
         return state_path(self.cfg, version).with_suffix(".log")
@@ -122,67 +116,66 @@ class App:
 
     def config_view(self) -> dict:
         now = _now()
-        waves = []
-        for w in self.cfg.waves:
-            regions = []
-            for r in w.regions:
-                win = r.window
+        stops = []
+        for s in self.cfg.stops:
+            platforms = []
+            for p in s.platforms:
+                tt = p.timetable
                 try:
-                    nxt = win.next_start(now)
-                except NoWindowError:
+                    nxt = tt.next_start(now)
+                except NoServiceError:
                     nxt = None
-                regions.append({
-                    "name": r.name, "window": win.name, "timezone": win.timezone,
-                    "bake": format_duration(r.bake), "deploy_timeout": format_duration(r.deploy_timeout),
-                    "open_now": nxt == now, "next_start": _iso(nxt),
-                    "window_end": _iso(win.window_end(now)) if nxt == now else None,
+                platforms.append({
+                    "name": p.name, "timetable": tt.name, "timezone": tt.timezone,
+                    "dwell": format_duration(p.dwell),
+                    "deploy_timeout": format_duration(p.deploy_timeout),
+                    "in_service": nxt == now, "next_start": _iso(nxt),
+                    "service_end": _iso(tt.service_end(now)) if nxt == now else None,
                 })
-            waves.append({"name": w.name, "max_parallel": w.max_parallel, "approval": w.approval,
-                          "gap": format_duration(w.gap) if w.gap else None, "regions": regions})
+            stops.append({"name": s.name, "parallel_platforms": s.parallel_platforms,
+                          "signal": s.signal,
+                          "headway": format_duration(s.headway) if s.headway else None,
+                          "platforms": platforms})
         return {"train": self.cfg.name, "rollback_scope": self.cfg.rollback_scope,
                 "has_rollback": bool(self.cfg.rollback_command),
-                "slack": self.cfg.slack is not None, "now": _iso(now), "waves": waves}
+                "slack": self.cfg.slack is not None, "now": _iso(now), "stops": stops}
 
-    def plan_view(self) -> dict:
+    def timetable_view(self) -> dict:
         try:
-            waves = plan(self.cfg, _now())
-        except NoWindowError as e:
+            projected = project(self.cfg, _now())
+        except NoServiceError as e:
             raise ApiError(HTTPStatus.CONFLICT, str(e))
-        return {"waves": [
-            {"name": w.name, "regions": [
-                {"name": p.region.name, "start": _iso(p.start), "end": _iso(p.end),
-                 "wait": format_duration(p.start - p.earliest) if p.start > p.earliest else None}
+        return {"stops": [
+            {"name": s.name, "platforms": [
+                {"name": p.platform.name, "start": _iso(p.start), "end": _iso(p.end),
+                 "held": format_duration(p.start - p.earliest) if p.start > p.earliest else None}
                 for p in planned]}
-            for w, planned in waves]}
+            for s, planned in projected]}
 
     def _summary(self, st: dict) -> dict:
         counts: dict[str, int] = {}
-        for r in st["regions"].values():
-            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        for p in st["platforms"].values():
+            counts[p["status"]] = counts.get(p["status"], 0) + 1
         alive = owner_alive(st)
         return {
             "version": st["version"], "previous_version": st.get("previous_version"),
             "status": st["status"], "started_at": st.get("started_at"),
             "finished_at": st.get("finished_at"), "counts": counts,
-            "total": len(st["regions"]), "active": alive,
+            "total": len(st["platforms"]), "active": alive,
             "interrupted": st["status"] in ACTIVE_STATUSES and not alive,
         }
 
-    def list_runs(self) -> list[dict]:
+    def list_departures(self) -> list[dict]:
         self._reap()
-        runs = []
-        prefix = f"{self.cfg.name}-"
-        for path in self.cfg.state_dir.glob(f"{prefix}*.json"):
-            try:
-                st = json.loads(path.read_text())
-            except ValueError:
-                continue
-            if st.get("train") == self.cfg.name:
-                runs.append(self._summary(st))
-        runs.sort(key=lambda r: r["started_at"] or "", reverse=True)
-        return runs
+        departures = []
+        for path in self.cfg.state_dir.glob(f"{self.cfg.name}-*.json"):
+            st = read_state(path)
+            if st and st.get("train") == self.cfg.name:
+                departures.append(self._summary(st))
+        departures.sort(key=lambda d: d["started_at"] or "", reverse=True)
+        return departures
 
-    def get_run(self, version: str) -> dict:
+    def get_departure(self, version: str) -> dict:
         self._reap()
         st = self._state(self._check_version(version))
         log_text = _tail(self._log_path(version), LOG_TAIL_LINES)
@@ -190,18 +183,18 @@ class App:
             if log_text:  # process started but hasn't written state yet, or died early
                 return {"version": version, "starting": True, "log": log_text,
                         "actions": self._audit_entries(version)}
-            raise ApiError(HTTPStatus.NOT_FOUND, f"no run for version {version}")
-        pending = next((name for name, w in st.get("waves", {}).items()
-                        if (w.get("approval") or {}).get("status") == "pending"), None)
-        approval_requested = bool(pending) and approval_path(self.cfg, version, pending).exists()
+            raise ApiError(HTTPStatus.NOT_FOUND, f"no departure for version {version}")
+        at_signal = next((name for name, s in st.get("stops", {}).items()
+                          if (s.get("signal") or {}).get("status") == SIGNAL_WAITING), None)
+        cleared = bool(at_signal) and signal_path(self.cfg, version, at_signal).exists()
         return {
             **self._summary(st),
-            "regions": st["regions"],
-            "waves": st.get("waves", {}),
+            "platforms": st["platforms"],
+            "stops": st.get("stops", {}),
             "events": st.get("events", [])[-200:],
-            "pending_approval": pending,
-            "approval_submitted": approval_requested,
-            "abort_requested": abort_path(self.cfg, version).exists(),
+            "signal_at": at_signal,
+            "signal_clear_submitted": cleared,
+            "brake_applied": brake_path(self.cfg, version).exists(),
             "log": log_text,
             "actions": self._audit_entries(version),
         }
@@ -209,12 +202,12 @@ class App:
     # ---- actions -----------------------------------------------------------
 
     def _spawn(self, version: str, extra: list[str], user: str) -> None:
-        cmd = [sys.executable, "-m", "deploytrain", "-c", self.config_path, "run",
+        cmd = [sys.executable, "-m", "deploytrain", "-c", self.config_path, "depart",
                "--version", version, *extra]
         log_path = self._log_path(version)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a") as fh:
-            fh.write(f"\n=== {_iso(_now())} started by {user}: {' '.join(cmd[2:])} ===\n")
+            fh.write(f"\n=== {_iso(_now())} dispatched by {user}: {' '.join(cmd[2:])} ===\n")
             fh.flush()
             proc = subprocess.Popen(
                 cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -223,18 +216,19 @@ class App:
         with self._lock:
             self._children.append(proc)
 
-    def start(self, body: dict, user: str) -> dict:
+    def depart(self, body: dict, user: str) -> dict:
         version = self._check_version(body.get("version"))
         prev = body.get("previous_version") or None
         if prev is not None:
             self._check_version(prev)
-        if self._state(version) is not None or state_path(self.cfg, version).exists():
+        if state_path(self.cfg, version).exists():
             raise ApiError(HTTPStatus.CONFLICT,
-                           f"a run for {version} already exists; open it and use resume")
+                           f"a departure for {version} already exists; open it and use resume")
         extra = ["--previous-version", prev] if prev else []
         if body.get("dry_run"):
             extra.append("--dry-run")
-        self._audit(user, "start", version, previous_version=prev, dry_run=bool(body.get("dry_run")))
+        self._audit(user, "depart", version, previous_version=prev,
+                    dry_run=bool(body.get("dry_run")))
         self._spawn(version, extra, user)
         return {"ok": True, "version": version}
 
@@ -242,40 +236,40 @@ class App:
         version = self._check_version(body.get("version"))
         st = self._state(version)
         if st is None:
-            raise ApiError(HTTPStatus.NOT_FOUND, f"no run for version {version}")
+            raise ApiError(HTTPStatus.NOT_FOUND, f"no departure for version {version}")
         if owner_alive(st):
-            raise ApiError(HTTPStatus.CONFLICT, f"{version} is already running")
+            raise ApiError(HTTPStatus.CONFLICT, f"{version} is already en route")
         if st["status"] == SUCCEEDED:
-            raise ApiError(HTTPStatus.CONFLICT, f"{version} already succeeded")
+            raise ApiError(HTTPStatus.CONFLICT, f"{version} has already arrived")
         extra = ["--retry-failed"] if body.get("retry_failed") else []
         if st["status"] in ACTIVE_STATUSES:
-            extra.append("--force")  # state says running but its process is gone
+            extra.append("--force")  # state says en route but its process is gone
         self._audit(user, "resume", version, retry_failed=bool(body.get("retry_failed")))
         self._spawn(version, extra, user)
         return {"ok": True}
 
-    def abort(self, body: dict, user: str) -> dict:
+    def brake(self, body: dict, user: str) -> dict:
         version = self._check_version(body.get("version"))
         st = self._state(version)
         if st is None or not owner_alive(st):
-            raise ApiError(HTTPStatus.CONFLICT, f"{version} is not running")
-        path = abort_path(self.cfg, version)
-        path.write_text(json.dumps({"by": user, "at": _iso(_now())}))
-        self._audit(user, "abort", version)
+            raise ApiError(HTTPStatus.CONFLICT, f"{version} is not en route")
+        apply_brake(self.cfg, version, user)
+        self._audit(user, "brake", version)
         return {"ok": True}
 
-    def approve(self, body: dict, user: str) -> dict:
+    def clear_signal(self, body: dict, user: str) -> dict:
         version = self._check_version(body.get("version"))
-        wave = body.get("wave")
+        stop = body.get("stop", body.get("wave"))
         st = self._state(version)
         if st is None:
-            raise ApiError(HTTPStatus.NOT_FOUND, f"no run for version {version}")
-        approval = (st.get("waves", {}).get(wave) or {}).get("approval") or {}
-        if approval.get("status") != "pending":
-            raise ApiError(HTTPStatus.CONFLICT, f"wave {wave!r} is not waiting for approval")
-        request_approval(self.cfg, version, wave, user)
-        self._audit(user, "approve", version, wave=wave)
+            raise ApiError(HTTPStatus.NOT_FOUND, f"no departure for version {version}")
+        signal = (st.get("stops", {}).get(stop) or {}).get("signal") or {}
+        if signal.get("status") != SIGNAL_WAITING:
+            raise ApiError(HTTPStatus.CONFLICT, f"no signal is waiting at stop {stop!r}")
+        clear_signal(self.cfg, version, stop, user)
+        self._audit(user, "clear_signal", version, stop=stop)
         return {"ok": True}
+
 
 
 def make_handler(app: App):
@@ -335,12 +329,12 @@ def make_handler(app: App):
                            "text/html; charset=utf-8")
             elif url.path == "/api/config":
                 self._api(app.config_view)
-            elif url.path == "/api/plan":
-                self._api(app.plan_view)
-            elif url.path == "/api/runs":
-                self._api(app.list_runs)
-            elif url.path == "/api/run":
-                self._api(lambda: app.get_run((q.get("version") or [""])[0]))
+            elif url.path in ("/api/timetable", "/api/plan"):
+                self._api(app.timetable_view)
+            elif url.path in ("/api/departures", "/api/runs"):
+                self._api(app.list_departures)
+            elif url.path in ("/api/departure", "/api/run"):
+                self._api(lambda: app.get_departure((q.get("version") or [""])[0]))
             elif url.path == "/api/whoami":
                 self._api(lambda: {"user": self._user(), "auth": bool(app.token)})
             else:
@@ -351,8 +345,14 @@ def make_handler(app: App):
             if self.headers.get("X-Requested-With") != "deploytrain":
                 self._json(HTTPStatus.FORBIDDEN, {"error": "missing X-Requested-With header"})
                 return
-            routes = {"/api/runs/start": app.start, "/api/runs/resume": app.resume,
-                      "/api/runs/abort": app.abort, "/api/runs/approve": app.approve}
+            routes = {
+                "/api/departures/depart": app.depart, "/api/departures/resume": app.resume,
+                "/api/departures/brake": app.brake,
+                "/api/departures/clear-signal": app.clear_signal,
+                # Pre-rename paths.
+                "/api/runs/start": app.depart, "/api/runs/resume": app.resume,
+                "/api/runs/abort": app.brake, "/api/runs/approve": app.clear_signal,
+            }
             fn = routes.get(urlparse(self.path).path)
             if fn is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -374,7 +374,7 @@ def serve(cfg: TrainConfig, config_path: str, host: str = "127.0.0.1", port: int
     token = os.environ.get("DEPLOYTRAIN_UI_TOKEN") or None
     if host not in ("127.0.0.1", "localhost", "::1") and not token:
         log.warning("UI is listening on %s without DEPLOYTRAIN_UI_TOKEN; anyone who can reach it "
-                    "can start and abort deploys. Put it behind an auth proxy or set a token.", host)
+                    "can dispatch trains and pull the brake. Put it behind an auth proxy or set a token.", host)
     app = App(cfg, config_path, token)
     httpd = ThreadingHTTPServer((host, port), make_handler(app))
     log.info("deploytrain UI for %r on http://%s:%d", cfg.name, host, port)

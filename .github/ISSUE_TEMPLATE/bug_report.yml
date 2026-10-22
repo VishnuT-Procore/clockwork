@@ -19,7 +19,7 @@ body:
     id: output
     attributes:
       label: Output / logs
-      description: Output of `deploytrain status --version ... --events 30`, or the run log.
+      description: Output of `deploytrain board --version ... --events 30`, or the journey log.
       render: text
   - type: input
     id: version
