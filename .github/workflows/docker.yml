@@ -1,0 +1,125 @@
+# Builds and smoke-tests the container image on every push and pull request.
+# Publishes multi-arch images (linux/amd64, linux/arm64) to GitHub Container Registry:
+#   ghcr.io/<owner>/deploytrain:edge             from main
+#   ghcr.io/<owner>/deploytrain:0.1.0, 0.1, latest  from v* tags
+name: Docker
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/deploytrain
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: deploytrain:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: "Smoke test: CLI, non-root user, timezone data"
+        run: |
+          set -eux
+          docker run --rm deploytrain:test --help
+          test "$(docker run --rm --entrypoint id deploytrain:test -u)" = 10001
+          docker run --rm -v "$PWD/examples:/config:ro" deploytrain:test timetable --at 2026-10-22T12:00 \
+            | tee /tmp/timetable.txt
+          grep -q "Thu 10-22 22:00 PDT" /tmp/timetable.txt   # America/Los_Angeles resolved
+
+      - name: "Smoke test: a one-off train with state on a volume"
+        run: |
+          set -eux
+          mkdir -p /tmp/cfg
+          cat > /tmp/cfg/train.yaml <<'EOF'
+          train:
+            name: ci
+            deploy_command: "echo deploying {platform} {version}"
+            inspection_command: "true"
+            inspection_interval: 1s
+            default_dwell: 2s
+          stops:
+            - name: canary
+              platforms: [p1]
+            - name: rest
+              parallel_platforms: 2
+              platforms: [p2, p3]
+          EOF
+          docker volume create ci-state
+          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state deploytrain:test depart --version v1
+          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state deploytrain:test board --version v1 \
+            | tee /tmp/board.txt
+          grep -q "status SUCCEEDED" /tmp/board.txt
+
+      - name: "Smoke test: web UI, health check and graceful stop"
+        run: |
+          set -eux
+          sed -i 's/default_dwell: 2s/default_dwell: 120s/' /tmp/cfg/train.yaml
+          docker run -d --name ui -p 127.0.0.1:8080:8080 -e DEPLOYTRAIN_UI_TOKEN=ci \
+            -v /tmp/cfg:/config:ro -v ci-state:/state deploytrain:test
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
+          docker exec ui python -m deploytrain.healthcheck
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/config)" = 401
+          curl -fsS -H "Authorization: Bearer ci" http://127.0.0.1:8080/api/config | grep -q '"train": "ci"'
+          curl -fsS -H "Authorization: Bearer ci" -H "X-Requested-With: deploytrain" \
+            -H "Content-Type: application/json" -d '{"version": "v2"}' \
+            http://127.0.0.1:8080/api/departures/depart
+          for i in $(seq 1 30); do
+            curl -fsS -H "Authorization: Bearer ci" "http://127.0.0.1:8080/api/departure?version=v2" \
+              | grep -q '"status": "dwelling"' && break; sleep 1; done
+          docker stop -t 40 ui
+          docker logs ui 2>&1 | tail -20
+          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state deploytrain:test board --version v2 \
+            | tee /tmp/board2.txt
+          grep -q "status ABORTED" /tmp/board2.txt   # braked cleanly on shutdown; resumable
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=edge,branch=main
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-qemu-action@v3
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+
+      - name: Build and publish multi-arch image
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

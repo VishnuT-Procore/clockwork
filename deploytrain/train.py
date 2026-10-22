@@ -36,6 +36,11 @@ SIGNAL_WAITING, SIGNAL_CLEARED = "waiting", "cleared"
 SIGNAL_POLL_SECONDS = 5.0
 MAX_SLEEP_CHUNK = 5.0  # seconds; bounds how quickly the brake or a halt is noticed
 INSPECTION_TIMEOUT = timedelta(minutes=5)
+# The process driving a train refreshes `heartbeat_at` in its state file this often. A
+# heartbeat older than HEARTBEAT_STALE means that process is gone (crashed, killed, or its
+# container was replaced), even if the recorded host/PID can't be checked or were reused.
+HEARTBEAT_INTERVAL = 15.0
+HEARTBEAT_STALE = timedelta(seconds=90)
 
 
 class Clock:
@@ -207,13 +212,19 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
-def owner_alive(data: dict) -> bool:
+def owner_alive(data: dict, now: datetime | None = None) -> bool:
     """Whether the process that owns this state file is still running."""
     if data.get("status") not in ACTIVE_STATUSES or not data.get("pid"):
         return False
-    if data.get("host") and data["host"] != socket.gethostname():
-        return True  # can't check another host; assume it's alive
-    return pid_alive(data["pid"])
+    same_host = not data.get("host") or data["host"] == socket.gethostname()
+    beat = data.get("heartbeat_at")
+    if beat:
+        now = now or datetime.now(timezone.utc)
+        if now - datetime.fromisoformat(beat) > HEARTBEAT_STALE:
+            return False
+        return pid_alive(data["pid"]) if same_host else True
+    # State written before heartbeats existed: can't check another host, so assume alive.
+    return pid_alive(data["pid"]) if same_host else True
 
 
 class Train:
@@ -266,7 +277,8 @@ class Train:
                 st["previous_version"] = self.previous_version
             self.previous_version = st.get("previous_version")
             st["status"] = EN_ROUTE
-            st.update(pid=os.getpid(), host=socket.gethostname())
+            st.update(pid=os.getpid(), host=socket.gethostname(),
+                      heartbeat_at=_iso(datetime.now(timezone.utc)))
             self.state.event(now, "train resumed its journey")
             self._notify("train_resumed")
             return
@@ -277,6 +289,7 @@ class Train:
             "status": EN_ROUTE,
             "pid": os.getpid(),
             "host": socket.gethostname(),
+            "heartbeat_at": _iso(datetime.now(timezone.utc)),
             "started_at": _iso(now),
             "finished_at": None,
             "stops": {s.name: {"finished_at": None, "signal": None} for s in self.cfg.stops},
@@ -483,12 +496,35 @@ class Train:
             if self.state.platform(p.name)["status"] == SUCCEEDED:
                 self._rollback(p, reason)
 
+    def _start_heartbeat(self) -> threading.Event:
+        """Refresh `heartbeat_at` in the background, even during long deploy commands."""
+        stop = threading.Event()
+
+        def beat() -> None:
+            while not stop.wait(HEARTBEAT_INTERVAL):
+                try:
+                    with self.state.lock:
+                        self.state.data["heartbeat_at"] = _iso(datetime.now(timezone.utc))
+                        self.state.save()
+                except Exception as e:  # noqa: BLE001 - retried on the next beat
+                    log.debug("heartbeat failed: %s", e)
+
+        threading.Thread(target=beat, name="heartbeat", daemon=True).start()
+        return stop
+
     def run(self, retry_failed: bool = False, force: bool = False) -> str:
         self.brake_file.unlink(missing_ok=True)
         self._init_state(retry_failed, force)
         if self.state.data["status"] == SUCCEEDED:
             log.info("train already arrived for %s", self.version)
             return SUCCEEDED
+        heartbeat = self._start_heartbeat()
+        try:
+            return self._journey()
+        finally:
+            heartbeat.set()
+
+    def _journey(self) -> str:
         served: list[Platform] = []
         stops_state = self.state.data["stops"]
         try:

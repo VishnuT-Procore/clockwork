@@ -1,0 +1,26 @@
+# Example: your own image = deploytrain + the tools your commands call + your config.
+#
+#   docker build -f examples/docker/Dockerfile.tools -t my-deploytrain .
+#
+# Pin tool versions and verify checksums for production use.
+ARG DEPLOYTRAIN_IMAGE=ghcr.io/vishnut-procore/deploytrain:0.1.0
+FROM ${DEPLOYTRAIN_IMAGE}
+
+USER root
+ARG KUBECTL_VERSION=v1.34.1
+ARG HELM_VERSION=v3.19.0
+ARG TARGETARCH=amd64
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && curl -fsSLo /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+ && chmod +x /usr/local/bin/kubectl \
+ && curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin --strip-components=1 "linux-${TARGETARCH}/helm" \
+ && apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+# Bake in your config and scripts (or mount them at /config instead).
+COPY examples/train.yaml /config/train.yaml
+COPY examples/scripts /config/scripts
+
+USER 10001:10001

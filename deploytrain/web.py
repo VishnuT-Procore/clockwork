@@ -11,9 +11,11 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +36,7 @@ VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$")
 USER_HEADERS = ("X-Forwarded-User", "X-Auth-Request-User", "X-Forwarded-Email",
                 "X-Auth-Request-Email")
 LOG_TAIL_LINES = 300
+SHUTDOWN_GRACE_SECONDS = 20.0
 
 
 class ApiError(Exception):
@@ -66,7 +69,7 @@ class App:
         self.cfg = cfg
         self.config_path = str(Path(config_path).resolve())
         self.token = token
-        self._children: list[subprocess.Popen] = []
+        self._children: list[tuple[subprocess.Popen, str]] = []
         self._lock = threading.Lock()
 
     # ---- paths -------------------------------------------------------------
@@ -103,7 +106,7 @@ class App:
 
     def _reap(self) -> None:
         with self._lock:
-            self._children = [p for p in self._children if p.poll() is None]
+            self._children = [(p, v) for p, v in self._children if p.poll() is None]
 
     @staticmethod
     def _check_version(version) -> str:
@@ -214,7 +217,24 @@ class App:
                 cwd=str(Path(self.config_path).parent), start_new_session=True,
                 env={**os.environ, "DEPLOYTRAIN_TRIGGERED_BY": user})
         with self._lock:
-            self._children.append(proc)
+            self._children.append((proc, version))
+
+    def shutdown(self, grace: float = SHUTDOWN_GRACE_SECONDS) -> None:
+        """Brake the trains this server dispatched and give them time to stop cleanly."""
+        self._reap()
+        with self._lock:
+            children = list(self._children)
+        if not children:
+            return
+        for _, version in children:
+            log.warning("shutting down: applying the emergency brake to %s", version)
+            apply_brake(self.cfg, version, "ui shutdown")
+        deadline = time.monotonic() + grace
+        for proc, _ in children:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass  # resumable: its heartbeat goes stale once it's killed
 
     def depart(self, body: dict, user: str) -> dict:
         version = self._check_version(body.get("version"))
@@ -324,7 +344,9 @@ def make_handler(app: App):
         def do_GET(self):
             url = urlparse(self.path)
             q = parse_qs(url.query)
-            if url.path in ("/", "/index.html"):
+            if url.path == "/healthz":  # unauthenticated liveness probe
+                self._json(HTTPStatus.OK, {"ok": True})
+            elif url.path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, (STATIC_DIR / "index.html").read_bytes(),
                            "text/html; charset=utf-8")
             elif url.path == "/api/config":
@@ -378,9 +400,15 @@ def serve(cfg: TrainConfig, config_path: str, host: str = "127.0.0.1", port: int
     app = App(cfg, config_path, token)
     httpd = ThreadingHTTPServer((host, port), make_handler(app))
     log.info("deploytrain UI for %r on http://%s:%d", cfg.name, host, port)
+
+    def on_sigterm(signum, frame):  # `docker stop`, Kubernetes pod termination
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, on_sigterm)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        pass
+        log.info("stopping the UI")
     finally:
         httpd.server_close()
+        app.shutdown(float(os.environ.get("DEPLOYTRAIN_SHUTDOWN_GRACE", SHUTDOWN_GRACE_SECONDS)))

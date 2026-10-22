@@ -1,0 +1,110 @@
+# deploytrain web UI on Kubernetes.
+#
+# - Exactly one replica with the Recreate strategy: two pods must never drive the same
+#   trains. State lives on a PersistentVolumeClaim.
+# - Trains dispatched from the UI run inside this pod. When the pod is stopped, deploytrain
+#   brakes them, and they can be resumed from the UI once the new pod is up.
+# - Use an image that contains your deploy tools (see examples/docker/Dockerfile.tools),
+#   and a ServiceAccount with the RBAC your commands need.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: deploytrain
+stringData:
+  DEPLOYTRAIN_UI_TOKEN: change-me
+  # SLACK_BOT_TOKEN: xoxb-...
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deploytrain-config
+data:
+  train.yaml: |
+    train:
+      name: api-service
+      deploy_command: "helm upgrade --install api ./chart --kube-context {platform} --set image.tag={version}"
+      inspection_command: "kubectl --context {platform} rollout status deploy/api --timeout=60s"
+      rollback_command: "helm rollback api --kube-context {platform}"
+      default_dwell: 30m
+      default_timetable: business-us
+    timetables:
+      business-us:
+        timezone: America/New_York
+        service_hours: [{days: mon-thu, start: "09:00", end: "16:00"}]
+    stops:
+      - name: canary
+        platforms: [us-west-2-canary]
+      - name: main-line
+        signal: true
+        parallel_platforms: 2
+        platforms: [us-east-1, us-west-2]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deploytrain-state
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deploytrain
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: deploytrain}
+  template:
+    metadata:
+      labels: {app: deploytrain}
+    spec:
+      # serviceAccountName: deploytrain   # with the RBAC your deploy commands need
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: deploytrain
+          image: ghcr.io/vishnut-procore/deploytrain:0.1.0   # or your image with tools
+          args: ["ui"]
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - {name: DEPLOYTRAIN_SHUTDOWN_GRACE, value: "35"}
+          envFrom:
+            - secretRef: {name: deploytrain}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: state, mountPath: /state}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: config
+          configMap: {name: deploytrain-config}
+        - name: state
+          persistentVolumeClaim: {claimName: deploytrain-state}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deploytrain
+spec:
+  selector: {app: deploytrain}
+  ports:
+    - {name: http, port: 80, targetPort: http}

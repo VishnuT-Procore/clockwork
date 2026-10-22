@@ -23,6 +23,17 @@ python -m pytest
 
 Supported Python versions: 3.10 – 3.13. CI runs the tests on Linux for every version and on macOS.
 
+The container image is built from the `Dockerfile` at the repo root:
+
+```bash
+docker build -t deploytrain:dev .
+docker run --rm -v "$PWD/examples:/config:ro" deploytrain:dev timetable
+```
+
+`.github/workflows/docker.yml` builds the image and smoke-tests it on every push and PR.
+It covers the CLI, a one-off train on a volume, and the UI's health check and graceful
+shutdown.
+
 ## Project layout
 
 | Path | What it does |
@@ -33,6 +44,7 @@ Supported Python versions: 3.10 – 3.13. CI runs the tests on Linux for every v
 | `deploytrain/notify.py` | Slack notifications |
 | `deploytrain/web.py`, `deploytrain/ui/index.html` | Web UI: JSON API plus a single-page dashboard with no build step |
 | `deploytrain/cli.py` | Command-line interface |
+| `deploytrain/healthcheck.py` | Container `HEALTHCHECK` (probes the UI's `/healthz`) |
 | `deploytrain/_compat.py` | Pre-rename names (waves, regions, windows, …) still accepted as aliases |
 
 ## Guidelines

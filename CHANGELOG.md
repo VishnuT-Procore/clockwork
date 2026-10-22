@@ -36,6 +36,16 @@ First public release.
   - departures, the route view, service status, events, live log and an audit trail
   - actions to dispatch, clear signals, brake, resume and retry
   - token auth or SSO-proxy identity, plus CSRF protection
+- **Container image:** a multi-arch image (amd64 and arm64) on GitHub Container
+  Registry. It runs as a non-root user, keeps its state on a `/state` volume, has a
+  `/healthz` health check, and shuts down gracefully on SIGTERM by braking running
+  trains. There are Docker Compose and Kubernetes examples (a UI Deployment and a
+  per-release Job). Config and state paths can be set with `DEPLOYTRAIN_CONFIG` /
+  `DEPLOYTRAIN_STATE_DIR`, and the UI address with `DEPLOYTRAIN_UI_HOST` /
+  `DEPLOYTRAIN_UI_PORT`.
+- **Restart-safe ownership:** the process driving a train writes a heartbeat to its state
+  file. A train whose heartbeat is stale can be resumed even if its host or container is
+  gone.
 - **Compatibility:** the generic names used during development (`waves`, `regions`,
   `windows`, `bake`, `approval`, `plan`, `run`, …) are still accepted as aliases. State
   files written with them still load. See "Upgrading from the old names" in the README.

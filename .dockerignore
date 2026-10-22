@@ -1,0 +1,13 @@
+# Only the package and its metadata are needed to build the image.
+.git
+.github
+.deploytrain
+.venv
+build
+dist
+docs
+examples
+tests
+**/__pycache__
+**/*.egg-info
+*.pyc

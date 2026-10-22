@@ -8,6 +8,7 @@ windows, bake, gap, approval, ...) are still accepted as aliases.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -164,6 +165,9 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         estimated_deploy_duration=parse_duration(t.get("estimated_deploy_duration", "10m")),
         timetables=timetables,
         stops=stops,
-        state_dir=(base_dir / t.get("state_dir", ".deploytrain")).resolve(),
+        # DEPLOYTRAIN_STATE_DIR wins, so containers can keep state on a volume while the
+        # config itself is mounted read-only.
+        state_dir=Path(os.environ.get("DEPLOYTRAIN_STATE_DIR")
+                       or base_dir / t.get("state_dir", ".deploytrain")).resolve(),
         slack=slack,
     )
