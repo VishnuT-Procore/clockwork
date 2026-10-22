@@ -15,6 +15,8 @@ deploytrain -c examples/train.yaml windows              # upcoming open windows
 deploytrain -c examples/train.yaml run --version v1.4.0 --previous-version v1.3.2
 deploytrain -c examples/train.yaml status --version v1.4.0
 deploytrain -c examples/train.yaml abort  --version v1.4.0   # from another shell
+deploytrain -c examples/train.yaml approve --version v1.4.0 --wave wave-2
+deploytrain -c examples/train.yaml ui      # web dashboard on http://127.0.0.1:8080
 ```
 
 ## How it runs
@@ -55,6 +57,54 @@ Commands are templates using `{train} {region} {wave} {version} {previous_versio
 any region `vars`. The same values are exported as env vars (`DT_REGION`, `DT_CLUSTER`, …).
 Escape literal braces as `{{ }}`.
 
+## Approval gates
+
+A wave with `approval: true` pauses before deploying. The run's status is set to
+`awaiting_approval` and Slack posts a message, which links to the UI if `ui_url` is set.
+The wave continues once someone approves it, either in the web UI or with
+`deploytrain approve --version V --wave W`. The approver's name is recorded in the run.
+If you abort and resume a run, an approval it already has is kept.
+
+## Web UI
+
+```
+deploytrain -c train.yaml ui --host 127.0.0.1 --port 8080
+```
+
+**What you can see**
+- **Runs list**, showing each run's status and progress.
+- **Pipeline view.** Each region shows its status, its failure output, and whether its
+  window is open (or when it opens next, in the region's own timezone).
+- **Events**, with routine health checks hidden unless you ask for them.
+- **Live log** of the run.
+- **"Who did what"**, an audit trail of actions taken in the UI.
+- **Regions & windows**, an overview of every region's window right now, plus a projected
+  schedule for a run started now.
+
+**What you can do**
+- **New run**, with a dry-run option and a preview of the projected schedule.
+- **Approve** a wave.
+- **Abort** a run.
+- **Resume** an interrupted or aborted run.
+- **Retry failed regions.**
+
+**How it works**
+- The UI only reads state files. Runs are started as separate `deploytrain run` processes,
+  logging to `.deploytrain/<train>-<version>.log`, so the UI can restart without affecting them.
+- Abort and approve use the same marker files as the CLI.
+- Only one process may own a run at a time. A run whose process died shows as
+  *interrupted*, and you can resume it.
+
+**Access and auth**
+- By default the UI listens only on localhost.
+- **Shared deployments:** put the UI behind your SSO proxy (oauth2-proxy, IAP, etc.).
+  The user name is taken from `X-Forwarded-User` / `X-Auth-Request-User` (or the
+  matching `...-Email` headers) and recorded on every action.
+- **Shared token:** alternatively, set `DEPLOYTRAIN_UI_TOKEN` to require a token. Users
+  then enter a name in the header, which is self-reported.
+- Every POST must send `X-Requested-With: deploytrain` (CSRF protection).
+- Actions are appended to `.deploytrain/<train>.audit.jsonl`.
+
 ## Slack notifications
 
 ```yaml
@@ -79,7 +129,7 @@ invite it to the channel and export `SLACK_BOT_TOKEN`.
 its own message.
 
 The available events are `train_started`, `train_resumed`, `train_finished`, `wave_started`,
-`wave_completed`, `region_waiting`, `region_deploying`, `region_succeeded`, `region_failed`
+`wave_completed`, `wave_awaiting_approval`, `wave_approved`, `region_waiting`, `region_deploying`, `region_succeeded`, `region_failed`
 and `region_rolled_back`. All are sent by default except `region_deploying`. Failure
 messages include the last part of the failing command's output, plus the
 `mention_on_failure` mention.

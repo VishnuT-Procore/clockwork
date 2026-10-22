@@ -35,6 +35,8 @@ class Wave:
     max_parallel: int = 1
     # Minimum wait after the previous wave finished before this one may start.
     gap: timedelta = timedelta(0)
+    # If true, the wave waits for a human approval (UI, CLI) before deploying.
+    approval: bool = False
 
 
 @dataclass
@@ -110,7 +112,8 @@ def from_dict(raw: dict, base_dir: Path = Path(".")) -> TrainConfig:
         max_parallel = int(w.get("max_parallel", 1))
         if max_parallel < 1:
             raise ConfigError(f"wave {wname!r}: max_parallel must be >= 1")
-        waves.append(Wave(wname, regions, max_parallel, parse_duration(w.get("gap", 0))))
+        waves.append(Wave(wname, regions, max_parallel, parse_duration(w.get("gap", 0)),
+                          bool(w.get("approval", False))))
     if not waves:
         raise ConfigError("at least one wave is required")
 

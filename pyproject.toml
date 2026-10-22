@@ -14,3 +14,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["deploytrain"]
+
+[tool.setuptools.package-data]
+deploytrain = ["ui/*.html"]

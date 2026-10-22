@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -24,8 +25,10 @@ PENDING, WAITING, DEPLOYING, BAKING = "pending", "waiting", "deploying", "baking
 SUCCEEDED, FAILED, ROLLED_BACK, ROLLBACK_FAILED, ABORTED = (
     "succeeded", "failed", "rolled_back", "rollback_failed", "aborted",
 )
-RUNNING = "running"
-MAX_SLEEP_CHUNK = 30.0  # seconds; bounds how quickly an abort is noticed
+RUNNING, AWAITING_APPROVAL = "running", "awaiting_approval"
+ACTIVE_STATUSES = (RUNNING, AWAITING_APPROVAL)
+APPROVAL_POLL_SECONDS = 5.0
+MAX_SLEEP_CHUNK = 5.0  # seconds; bounds how quickly an abort or halt is noticed
 HEALTH_CHECK_TIMEOUT = timedelta(minutes=5)
 
 
@@ -119,6 +122,39 @@ def abort_path(cfg: TrainConfig, version: str) -> Path:
     return state_path(cfg, version).with_suffix(".abort")
 
 
+def approval_path(cfg: TrainConfig, version: str, wave: str) -> Path:
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in wave)
+    return state_path(cfg, version).with_suffix(f".approve.{safe}")
+
+
+def request_approval(cfg: TrainConfig, version: str, wave: str, by: str) -> Path:
+    path = approval_path(cfg, version, wave)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"by": by, "at": _iso(datetime.now(timezone.utc))}))
+    return path
+
+
+def pid_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def owner_alive(data: dict) -> bool:
+    """Whether the process that owns this state file is still running."""
+    if data.get("status") not in ACTIVE_STATUSES or not data.get("pid"):
+        return False
+    if data.get("host") and data["host"] != socket.gethostname():
+        return True  # can't check another host; assume it's alive
+    return pid_alive(data["pid"])
+
+
 class Train:
     def __init__(self, cfg: TrainConfig, version: str, previous_version: str | None = None,
                  runner: Runner = shell_runner, clock: Clock | None = None,
@@ -146,12 +182,16 @@ class Train:
 
     # ---- state -------------------------------------------------------------
 
-    def _init_state(self, retry_failed: bool) -> None:
+    def _init_state(self, retry_failed: bool, force: bool) -> None:
         now = self.clock.now()
         if self.state.load():
             st = self.state.data
             if st["status"] == SUCCEEDED:
                 return
+            if not force and st.get("pid") != os.getpid() and owner_alive(st):
+                raise RuntimeError(
+                    f"train {self.version} is already running (pid {st['pid']} on {st.get('host')}); "
+                    "use --force only if that process is really gone")
             failed = [n for n, r in st["regions"].items()
                       if r["status"] in (FAILED, ROLLED_BACK, ROLLBACK_FAILED)]
             if failed and not retry_failed:
@@ -160,10 +200,12 @@ class Train:
             for r in st["regions"].values():
                 if r["status"] != SUCCEEDED:
                     r["status"] = PENDING
+                    r.pop("output", None)
             if self.previous_version and not st.get("previous_version"):
                 st["previous_version"] = self.previous_version
             self.previous_version = st.get("previous_version")
             st["status"] = RUNNING
+            st.update(pid=os.getpid(), host=socket.gethostname())
             self.state.event(now, "resuming train")
             self._notify("train_resumed")
             return
@@ -172,9 +214,11 @@ class Train:
             "version": self.version,
             "previous_version": self.previous_version,
             "status": RUNNING,
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
             "started_at": _iso(now),
             "finished_at": None,
-            "waves": {w.name: {"finished_at": None} for w in self.cfg.waves},
+            "waves": {w.name: {"finished_at": None, "approval": None} for w in self.cfg.waves},
             "regions": {r.name: {"wave": r.wave, "status": PENDING, "started_at": None,
                                  "finished_at": None, "message": ""}
                         for r in self.cfg.regions},
@@ -186,6 +230,7 @@ class Train:
     def _finish(self, status: str, message: str) -> str:
         self.state.data["status"] = status
         self.state.data["finished_at"] = _iso(self.clock.now())
+        self.state.data["pid"] = None
         self.state.event(self.clock.now(), message)
         self._notify("train_finished", status=status, message=message)
         return status
@@ -196,9 +241,11 @@ class Train:
         if self.abort_file.exists():
             raise AbortRequested()
 
-    def _sleep(self, seconds: float) -> None:
+    def _sleep(self, seconds: float, stop_on_halt: bool = False) -> None:
         while seconds > 0:
             self._check_abort()
+            if stop_on_halt and self._halt.is_set():
+                raise AbortRequested()
             chunk = min(seconds, MAX_SLEEP_CHUNK)
             self.clock.sleep(chunk)
             seconds -= chunk
@@ -258,7 +305,7 @@ class Train:
                 self.state.update_region(region.name, status=WAITING, message=msg)
                 self.state.event(now, msg, region.name)
                 self._notify("region_waiting", region=region.name, message=msg, opens_at=nxt)
-            self._sleep(min((nxt - now).total_seconds(), 300))
+            self._sleep(min((nxt - now).total_seconds(), 300), stop_on_halt=True)
 
     def _bake(self, region: Region) -> None:
         cfg = self.cfg
@@ -318,7 +365,7 @@ class Train:
         except RegionFailed as e:
             self._halt.set()
             self.state.update_region(name, status=FAILED, finished_at=_iso(self.clock.now()),
-                                     message=str(e))
+                                     message=str(e), output=e.output.strip()[-2000:])
             self.state.event(self.clock.now(), f"FAILED: {e}", name)
             self._notify("region_failed", region=name, error=str(e), output=e.output.strip())
             if self.cfg.rollback_scope != "none":
@@ -340,14 +387,37 @@ class Train:
                                 thread_name_prefix=f"wave-{wave.name}") as pool:
             return list(pool.map(self._deploy_region, todo))
 
+    def _wait_for_approval(self, wave: Wave, todo: list[Region]) -> None:
+        waves = self.state.data["waves"]
+        info = waves.setdefault(wave.name, {"finished_at": None})
+        if (info.get("approval") or {}).get("status") == "approved":
+            return
+        path = approval_path(self.cfg, self.version, wave.name)
+        info["approval"] = {"status": "pending", "requested_at": _iso(self.clock.now())}
+        self.state.data["status"] = AWAITING_APPROVAL
+        self.state.event(self.clock.now(), f"wave {wave.name!r} is waiting for approval")
+        self._notify("wave_awaiting_approval", wave=wave.name, regions=[r.name for r in todo])
+        while not path.exists():
+            self._sleep(APPROVAL_POLL_SECONDS)
+        try:
+            by = json.loads(path.read_text()).get("by") or "unknown"
+        except ValueError:
+            by = "unknown"
+        path.unlink(missing_ok=True)
+        info["approval"] = {**info["approval"], "status": "approved", "by": by,
+                            "approved_at": _iso(self.clock.now())}
+        self.state.data["status"] = RUNNING
+        self.state.event(self.clock.now(), f"wave {wave.name!r} approved by {by}")
+        self._notify("wave_approved", wave=wave.name, by=by)
+
     def _rollback_succeeded(self, regions: list[Region], reason: str) -> None:
         for r in reversed(regions):
             if self.state.region(r.name)["status"] == SUCCEEDED:
                 self._rollback(r, reason)
 
-    def run(self, retry_failed: bool = False) -> str:
+    def run(self, retry_failed: bool = False, force: bool = False) -> str:
         self.abort_file.unlink(missing_ok=True)
-        self._init_state(retry_failed)
+        self._init_state(retry_failed, force)
         if self.state.data["status"] == SUCCEEDED:
             log.info("train already succeeded for %s", self.version)
             return SUCCEEDED
@@ -363,6 +433,9 @@ class Train:
                             self.state.event(self.clock.now(),
                                              f"gap before wave {wave.name!r}: {format_duration(wave.gap)}")
                             self._sleep(wait)
+                todo = [r for r in wave.regions if self.state.region(r.name)["status"] != SUCCEEDED]
+                if wave.approval and todo:
+                    self._wait_for_approval(wave, todo)
                 results = self._run_wave(wave)
                 if FAILED in results:
                     reason = f"failure in wave {wave.name!r}"

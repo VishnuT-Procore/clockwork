@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import logging
 import sys
@@ -11,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from . import config as config_mod
 from .notify import Notifier, SlackNotifier, build_notifier
-from .train import SUCCEEDED, Train, abort_path, plan, state_path
+from .train import SUCCEEDED, Train, abort_path, plan, request_approval, state_path
 from .windows import format_duration, parse_duration
 
 
@@ -63,7 +64,7 @@ def cmd_windows(args, cfg) -> int:
 def cmd_run(args, cfg) -> int:
     notifier = Notifier() if args.no_notify else None
     train = Train(cfg, args.version, args.previous_version, dry_run=args.dry_run, notifier=notifier)
-    status = train.run(retry_failed=args.retry_failed)
+    status = train.run(retry_failed=args.retry_failed, force=args.force)
     print(f"\ntrain status: {status}")
     return 0 if status == SUCCEEDED else 1
 
@@ -93,6 +94,21 @@ def cmd_abort(args, cfg) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(datetime.now(timezone.utc).isoformat())
     print(f"abort requested for {cfg.name} {args.version}; the train stops at its next checkpoint")
+    return 0
+
+
+def cmd_approve(args, cfg) -> int:
+    if args.wave not in {w.name for w in cfg.waves}:
+        print(f"unknown wave {args.wave!r}", file=sys.stderr)
+        return 1
+    request_approval(cfg, args.version, args.wave, args.by or getpass.getuser())
+    print(f"approved wave {args.wave!r} of {cfg.name} {args.version}")
+    return 0
+
+
+def cmd_ui(args, cfg) -> int:
+    from .web import serve
+    serve(cfg, args.config, host=args.host, port=args.port)
     return 0
 
 
@@ -141,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--dry-run", action="store_true", help="print commands, respect windows, skip bake")
     sp.add_argument("--retry-failed", action="store_true", help="retry regions that failed last run")
     sp.add_argument("--no-notify", action="store_true", help="don't send Slack notifications")
+    sp.add_argument("--force", action="store_true",
+                    help="run even if the state says another process owns this train")
     sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("status", help="show train progress")
@@ -152,6 +170,17 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("abort", help="ask a running train to stop")
     sp.add_argument("--version", required=True)
     sp.set_defaults(func=cmd_abort)
+
+    sp = sub.add_parser("approve", help="approve a wave that is waiting for approval")
+    sp.add_argument("--version", required=True)
+    sp.add_argument("--wave", required=True)
+    sp.add_argument("--by", help="who is approving (default: current user)")
+    sp.set_defaults(func=cmd_approve)
+
+    sp = sub.add_parser("ui", help="serve the web UI")
+    sp.add_argument("--host", default="127.0.0.1")
+    sp.add_argument("--port", type=int, default=8080)
+    sp.set_defaults(func=cmd_ui)
 
     sp = sub.add_parser("notify-test", help="send a test Slack message")
     sp.set_defaults(func=cmd_notify_test)

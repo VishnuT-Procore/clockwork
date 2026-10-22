@@ -13,13 +13,13 @@ log = logging.getLogger("deploytrain")
 
 EVENTS = (
     "train_started", "train_resumed", "train_finished",
-    "wave_started", "wave_completed",
+    "wave_started", "wave_completed", "wave_awaiting_approval", "wave_approved",
     "region_waiting", "region_deploying", "region_succeeded",
     "region_failed", "region_rolled_back",
 )
 DEFAULT_EVENTS = frozenset(EVENTS) - {"region_deploying"}
 # Events posted to the channel (not just the thread) in bot mode.
-BROADCAST_EVENTS = frozenset({"region_failed", "train_finished"})
+BROADCAST_EVENTS = frozenset({"region_failed", "train_finished", "wave_awaiting_approval"})
 
 STATUS_EMOJI = {
     "pending": ":white_circle:",
@@ -32,6 +32,7 @@ STATUS_EMOJI = {
     "rollback_failed": ":rotating_light:",
     "aborted": ":octagonal_sign:",
     "running": ":steam_locomotive:",
+    "awaiting_approval": ":raised_hand:",
 }
 
 SLACK_API = "https://slack.com/api/"
@@ -59,6 +60,7 @@ class SlackSettings:
     mention_on_failure: str = ""
     events: frozenset = DEFAULT_EVENTS
     timeout: float = 10.0
+    ui_url: str = ""  # if set, approval requests link to the web UI
 
     @classmethod
     def from_config(cls, raw: dict) -> "SlackSettings":
@@ -75,6 +77,7 @@ class SlackSettings:
             mention_on_failure=raw.get("mention_on_failure", ""),
             events=events if events is not None else DEFAULT_EVENTS,
             timeout=float(raw.get("timeout", cls.timeout)),
+            ui_url=raw.get("ui_url", ""),
         )
 
 
@@ -160,6 +163,12 @@ class SlackNotifier(Notifier):
             return f":repeat: Train resumed for `{version}`"
         if event == "wave_started":
             return f":arrow_forward: Wave *{ctx['wave']}* starting: {', '.join(ctx['regions'])}"
+        if event == "wave_awaiting_approval":
+            link = f" <{self.settings.ui_url}|Approve in the UI>" if self.settings.ui_url else ""
+            return (f":raised_hand: Wave *{ctx['wave']}* is waiting for approval "
+                    f"({', '.join(ctx['regions'])}).{link}")
+        if event == "wave_approved":
+            return f":ok_hand: Wave *{ctx['wave']}* approved by *{ctx['by']}*"
         if event == "wave_completed":
             return f":checkered_flag: Wave *{ctx['wave']}* complete"
         if event == "region_waiting":

@@ -1,0 +1,384 @@
+"""Web UI: a small JSON API over the train state files plus a single-page dashboard.
+
+The UI never writes a train's state file. Runs are separate `deploytrain run` processes,
+and actions use the same files the CLI uses (abort and approve marker files). The UI can
+be restarted at any time without affecting running trains.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import subprocess
+import sys
+import threading
+from datetime import datetime, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from .config import TrainConfig
+from .train import (
+    ACTIVE_STATUSES, SUCCEEDED, abort_path, approval_path, owner_alive, plan, request_approval,
+    state_path,
+)
+from .windows import NoWindowError, format_duration
+
+log = logging.getLogger("deploytrain")
+
+STATIC_DIR = Path(__file__).parent / "ui"
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$")
+USER_HEADERS = ("X-Forwarded-User", "X-Auth-Request-User", "X-Forwarded-Email",
+                "X-Auth-Request-Email")
+LOG_TAIL_LINES = 300
+
+
+class ApiError(Exception):
+    def __init__(self, status: HTTPStatus, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds") if dt else None
+
+
+def _tail(path: Path, lines: int) -> str:
+    if not path.exists():
+        return ""
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - 256 * 1024))
+        data = fh.read().decode(errors="replace")
+    return "\n".join(data.splitlines()[-lines:])
+
+
+class App:
+    def __init__(self, cfg: TrainConfig, config_path: str, token: str | None = None):
+        self.cfg = cfg
+        self.config_path = str(Path(config_path).resolve())
+        self.token = token
+        self._children: list[subprocess.Popen] = []
+        self._lock = threading.Lock()
+
+    # ---- paths -------------------------------------------------------------
+
+    def _state(self, version: str) -> dict | None:
+        path = state_path(self.cfg, version)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except ValueError:  # mid-write; atomic replace makes this rare
+            return None
+
+    def _log_path(self, version: str) -> Path:
+        return state_path(self.cfg, version).with_suffix(".log")
+
+    def _audit_path(self) -> Path:
+        return self.cfg.state_dir / f"{self.cfg.name}.audit.jsonl"
+
+    def _audit(self, user: str, action: str, version: str, **details) -> None:
+        entry = {"at": _iso(_now()), "user": user, "action": action, "version": version, **details}
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock, open(self._audit_path(), "a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+        log.info("audit: %s %s %s %s", user, action, version, details or "")
+
+    def _audit_entries(self, version: str) -> list[dict]:
+        path = self._audit_path()
+        if not path.exists():
+            return []
+        out = []
+        for line in path.read_text().splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("version") == version:
+                out.append(e)
+        return out
+
+    def _reap(self) -> None:
+        with self._lock:
+            self._children = [p for p in self._children if p.poll() is None]
+
+    @staticmethod
+    def _check_version(version) -> str:
+        if not isinstance(version, str) or not VERSION_RE.match(version):
+            raise ApiError(HTTPStatus.BAD_REQUEST,
+                           "version must be 1-100 chars of letters, digits, . _ + -")
+        return version
+
+    # ---- views -------------------------------------------------------------
+
+    def config_view(self) -> dict:
+        now = _now()
+        waves = []
+        for w in self.cfg.waves:
+            regions = []
+            for r in w.regions:
+                win = r.window
+                try:
+                    nxt = win.next_start(now)
+                except NoWindowError:
+                    nxt = None
+                regions.append({
+                    "name": r.name, "window": win.name, "timezone": win.timezone,
+                    "bake": format_duration(r.bake), "deploy_timeout": format_duration(r.deploy_timeout),
+                    "open_now": nxt == now, "next_start": _iso(nxt),
+                    "window_end": _iso(win.window_end(now)) if nxt == now else None,
+                })
+            waves.append({"name": w.name, "max_parallel": w.max_parallel, "approval": w.approval,
+                          "gap": format_duration(w.gap) if w.gap else None, "regions": regions})
+        return {"train": self.cfg.name, "rollback_scope": self.cfg.rollback_scope,
+                "has_rollback": bool(self.cfg.rollback_command),
+                "slack": self.cfg.slack is not None, "now": _iso(now), "waves": waves}
+
+    def plan_view(self) -> dict:
+        try:
+            waves = plan(self.cfg, _now())
+        except NoWindowError as e:
+            raise ApiError(HTTPStatus.CONFLICT, str(e))
+        return {"waves": [
+            {"name": w.name, "regions": [
+                {"name": p.region.name, "start": _iso(p.start), "end": _iso(p.end),
+                 "wait": format_duration(p.start - p.earliest) if p.start > p.earliest else None}
+                for p in planned]}
+            for w, planned in waves]}
+
+    def _summary(self, st: dict) -> dict:
+        counts: dict[str, int] = {}
+        for r in st["regions"].values():
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        alive = owner_alive(st)
+        return {
+            "version": st["version"], "previous_version": st.get("previous_version"),
+            "status": st["status"], "started_at": st.get("started_at"),
+            "finished_at": st.get("finished_at"), "counts": counts,
+            "total": len(st["regions"]), "active": alive,
+            "interrupted": st["status"] in ACTIVE_STATUSES and not alive,
+        }
+
+    def list_runs(self) -> list[dict]:
+        self._reap()
+        runs = []
+        prefix = f"{self.cfg.name}-"
+        for path in self.cfg.state_dir.glob(f"{prefix}*.json"):
+            try:
+                st = json.loads(path.read_text())
+            except ValueError:
+                continue
+            if st.get("train") == self.cfg.name:
+                runs.append(self._summary(st))
+        runs.sort(key=lambda r: r["started_at"] or "", reverse=True)
+        return runs
+
+    def get_run(self, version: str) -> dict:
+        self._reap()
+        st = self._state(self._check_version(version))
+        log_text = _tail(self._log_path(version), LOG_TAIL_LINES)
+        if st is None:
+            if log_text:  # process started but hasn't written state yet, or died early
+                return {"version": version, "starting": True, "log": log_text,
+                        "actions": self._audit_entries(version)}
+            raise ApiError(HTTPStatus.NOT_FOUND, f"no run for version {version}")
+        pending = next((name for name, w in st.get("waves", {}).items()
+                        if (w.get("approval") or {}).get("status") == "pending"), None)
+        approval_requested = bool(pending) and approval_path(self.cfg, version, pending).exists()
+        return {
+            **self._summary(st),
+            "regions": st["regions"],
+            "waves": st.get("waves", {}),
+            "events": st.get("events", [])[-200:],
+            "pending_approval": pending,
+            "approval_submitted": approval_requested,
+            "abort_requested": abort_path(self.cfg, version).exists(),
+            "log": log_text,
+            "actions": self._audit_entries(version),
+        }
+
+    # ---- actions -----------------------------------------------------------
+
+    def _spawn(self, version: str, extra: list[str], user: str) -> None:
+        cmd = [sys.executable, "-m", "deploytrain", "-c", self.config_path, "run",
+               "--version", version, *extra]
+        log_path = self._log_path(version)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as fh:
+            fh.write(f"\n=== {_iso(_now())} started by {user}: {' '.join(cmd[2:])} ===\n")
+            fh.flush()
+            proc = subprocess.Popen(
+                cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                cwd=str(Path(self.config_path).parent), start_new_session=True,
+                env={**os.environ, "DEPLOYTRAIN_TRIGGERED_BY": user})
+        with self._lock:
+            self._children.append(proc)
+
+    def start(self, body: dict, user: str) -> dict:
+        version = self._check_version(body.get("version"))
+        prev = body.get("previous_version") or None
+        if prev is not None:
+            self._check_version(prev)
+        if self._state(version) is not None or state_path(self.cfg, version).exists():
+            raise ApiError(HTTPStatus.CONFLICT,
+                           f"a run for {version} already exists; open it and use resume")
+        extra = ["--previous-version", prev] if prev else []
+        if body.get("dry_run"):
+            extra.append("--dry-run")
+        self._audit(user, "start", version, previous_version=prev, dry_run=bool(body.get("dry_run")))
+        self._spawn(version, extra, user)
+        return {"ok": True, "version": version}
+
+    def resume(self, body: dict, user: str) -> dict:
+        version = self._check_version(body.get("version"))
+        st = self._state(version)
+        if st is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, f"no run for version {version}")
+        if owner_alive(st):
+            raise ApiError(HTTPStatus.CONFLICT, f"{version} is already running")
+        if st["status"] == SUCCEEDED:
+            raise ApiError(HTTPStatus.CONFLICT, f"{version} already succeeded")
+        extra = ["--retry-failed"] if body.get("retry_failed") else []
+        if st["status"] in ACTIVE_STATUSES:
+            extra.append("--force")  # state says running but its process is gone
+        self._audit(user, "resume", version, retry_failed=bool(body.get("retry_failed")))
+        self._spawn(version, extra, user)
+        return {"ok": True}
+
+    def abort(self, body: dict, user: str) -> dict:
+        version = self._check_version(body.get("version"))
+        st = self._state(version)
+        if st is None or not owner_alive(st):
+            raise ApiError(HTTPStatus.CONFLICT, f"{version} is not running")
+        path = abort_path(self.cfg, version)
+        path.write_text(json.dumps({"by": user, "at": _iso(_now())}))
+        self._audit(user, "abort", version)
+        return {"ok": True}
+
+    def approve(self, body: dict, user: str) -> dict:
+        version = self._check_version(body.get("version"))
+        wave = body.get("wave")
+        st = self._state(version)
+        if st is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, f"no run for version {version}")
+        approval = (st.get("waves", {}).get(wave) or {}).get("approval") or {}
+        if approval.get("status") != "pending":
+            raise ApiError(HTTPStatus.CONFLICT, f"wave {wave!r} is not waiting for approval")
+        request_approval(self.cfg, version, wave, user)
+        self._audit(user, "approve", version, wave=wave)
+        return {"ok": True}
+
+
+def make_handler(app: App):
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "deploytrain"
+
+        def log_message(self, fmt, *args):
+            log.debug("ui %s - " + fmt, self.address_string(), *args)
+
+        # ---- plumbing ----
+
+        def _send(self, status: int, body: bytes, ctype: str) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _json(self, status: int, data) -> None:
+            self._send(status, json.dumps(data).encode(), "application/json")
+
+        def _user(self) -> str:
+            for h in USER_HEADERS:  # set by an authenticating proxy (oauth2-proxy, IAP, ...)
+                if self.headers.get(h):
+                    return self.headers[h]
+            name = (self.headers.get("X-Deploytrain-User") or "").strip()
+            return name[:64] if name else "anonymous"
+
+        def _authorized(self) -> bool:
+            if not app.token:
+                return True
+            return self.headers.get("Authorization") == f"Bearer {app.token}"
+
+        def _api(self, fn) -> None:
+            if not self._authorized():
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing or invalid token"})
+                return
+            try:
+                self._json(HTTPStatus.OK, fn())
+            except ApiError as e:
+                self._json(e.status, {"error": str(e)})
+            except Exception as e:  # noqa: BLE001
+                log.exception("ui request failed")
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(e)})
+
+        # ---- routes ----
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            q = parse_qs(url.query)
+            if url.path in ("/", "/index.html"):
+                self._send(HTTPStatus.OK, (STATIC_DIR / "index.html").read_bytes(),
+                           "text/html; charset=utf-8")
+            elif url.path == "/api/config":
+                self._api(app.config_view)
+            elif url.path == "/api/plan":
+                self._api(app.plan_view)
+            elif url.path == "/api/runs":
+                self._api(app.list_runs)
+            elif url.path == "/api/run":
+                self._api(lambda: app.get_run((q.get("version") or [""])[0]))
+            elif url.path == "/api/whoami":
+                self._api(lambda: {"user": self._user(), "auth": bool(app.token)})
+            else:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+        def do_POST(self):
+            # Custom header + JSON body: blocks cross-site form posts (CSRF).
+            if self.headers.get("X-Requested-With") != "deploytrain":
+                self._json(HTTPStatus.FORBIDDEN, {"error": "missing X-Requested-With header"})
+                return
+            routes = {"/api/runs/start": app.start, "/api/runs/resume": app.resume,
+                      "/api/runs/abort": app.abort, "/api/runs/approve": app.approve}
+            fn = routes.get(urlparse(self.path).path)
+            if fn is None:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(min(length, 64 * 1024)) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError
+            except ValueError:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "body must be a JSON object"})
+                return
+            self._api(lambda: fn(body, self._user()))
+
+    return Handler
+
+
+def serve(cfg: TrainConfig, config_path: str, host: str = "127.0.0.1", port: int = 8080) -> None:
+    token = os.environ.get("DEPLOYTRAIN_UI_TOKEN") or None
+    if host not in ("127.0.0.1", "localhost", "::1") and not token:
+        log.warning("UI is listening on %s without DEPLOYTRAIN_UI_TOKEN; anyone who can reach it "
+                    "can start and abort deploys. Put it behind an auth proxy or set a token.", host)
+    app = App(cfg, config_path, token)
+    httpd = ThreadingHTTPServer((host, port), make_handler(app))
+    log.info("deploytrain UI for %r on http://%s:%d", cfg.name, host, port)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()

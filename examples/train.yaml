@@ -28,6 +28,7 @@ notifications:
     # Option B: incoming webhook -> one message per event. Export SLACK_WEBHOOK_URL.
     webhook_url_env: SLACK_WEBHOOK_URL
     mention_on_failure: "<!here>"   # or a user group: "<!subteam^S0123ABCD>"
+    ui_url: https://deploytrain.internal.example.com  # links approval requests to the web UI
     # Which events to post (default: all except region_deploying):
     # events: [train_started, train_resumed, train_finished, wave_started, wave_completed,
     #          region_waiting, region_deploying, region_succeeded, region_failed, region_rolled_back]
@@ -79,6 +80,7 @@ waves:
       - name: us-west-2
         vars: {cluster: prod-usw2}
   - name: wave-2
+    approval: true                # pause until someone approves (web UI or `deploytrain approve`)
     max_parallel: 2
     bake: 1h
     regions:

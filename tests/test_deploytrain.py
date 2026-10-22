@@ -5,7 +5,8 @@ import pytest
 
 from deploytrain import config
 from deploytrain.train import (
-    ABORTED, FAILED, PENDING, ROLLED_BACK, SUCCEEDED, CommandResult, Train, abort_path, plan,
+    ABORTED, FAILED, PENDING, ROLLED_BACK, SUCCEEDED, AbortRequested, CommandResult, Train,
+    abort_path, plan,
 )
 from deploytrain.windows import WindowProfile, parse_duration
 
@@ -249,3 +250,22 @@ def test_plan_projects_schedule(tmp_path):
     assert canary.end == dt("2026-10-26T13:25")
     assert {p.region.name: p.start for p in waves[1][1]} == {
         "us-east": dt("2026-10-26T13:25"), "eu-west": dt("2026-10-26T13:25")}
+
+
+
+def test_halt_interrupts_window_wait_sleep(tmp_path):
+    class CountingClock(FakeClock):
+        sleeps = 0
+
+        def sleep(self, seconds):
+            self.sleeps += 1
+            super().sleep(seconds)
+
+    clock = CountingClock(dt("2026-10-26T14:00"))
+    train = Train(make_cfg(tmp_path), "v2", runner=FakeRunner(clock), clock=clock)
+    train._halt.set()  # another region in the wave failed
+    with pytest.raises(AbortRequested):
+        train._sleep(300, stop_on_halt=True)
+    assert clock.sleeps == 0
+    train._sleep(10)  # in-flight work (bake) ignores the halt and finishes
+    assert clock.sleeps == 2

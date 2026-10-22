@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deploy Train</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f6; --border: #dfe3e8; --text: #1b1f24;
+  --muted: #5f6b7a; --accent: #2563eb; --accent-text: #ffffff;
+  --gray: #8a94a3; --amber: #b7791f; --blue: #2563eb; --violet: #7c3aed; --green: #15803d;
+  --red: #c62828; --orange: #c2410c;
+  --gray-bg: #eef0f3; --amber-bg: #fdf3e1; --blue-bg: #e6eefc; --violet-bg: #f0e9fd;
+  --green-bg: #e5f4ea; --red-bg: #fbe7e7; --orange-bg: #fdece3;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel-2: #1e232b; --border: #2b313b; --text: #e6e9ee;
+    --muted: #97a1af; --accent: #4f8cff; --accent-text: #0b0d10;
+    --gray: #8a94a3; --amber: #f0b44c; --blue: #6aa1ff; --violet: #a98bfa; --green: #4ccb7a;
+    --red: #ff6b6b; --orange: #fb923c;
+    --gray-bg: #232830; --amber-bg: #3a2e16; --blue-bg: #1a2a47; --violet-bg: #2a2145;
+    --green-bg: #15301f; --red-bg: #3d1c1c; --orange-bg: #3b2414;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+button, input { font: inherit; color: inherit; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+a { color: var(--accent); }
+
+header.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+  background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+header.top h1 { font-size: 16px; margin: 0; font-weight: 650; }
+header.top .train { color: var(--muted); font-weight: 500; }
+header.top .spacer { flex: 1; }
+.user-chip { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.user-chip input { width: 130px; padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--panel-2); }
+
+.btn { border: 1px solid var(--border); background: var(--panel); padding: 6px 12px; border-radius: 7px;
+  cursor: pointer; font-weight: 550; white-space: nowrap; }
+.btn:hover { background: var(--panel-2); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+.btn.danger:hover { background: var(--red-bg); }
+.btn.warn { background: var(--amber); border-color: var(--amber); color: #fff; }
+
+.layout { display: grid; grid-template-columns: 290px 1fr; min-height: calc(100vh - 53px); }
+aside { border-right: 1px solid var(--border); background: var(--panel); padding: 12px; overflow-y: auto;
+  height: calc(100vh - 53px); position: sticky; top: 53px; }
+aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  margin: 14px 6px 6px; }
+.nav-item { display: block; width: 100%; text-align: left; border: 1px solid transparent; background: none;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 2px; }
+.nav-item:hover { background: var(--panel-2); }
+.nav-item.active { background: var(--panel-2); border-color: var(--border); }
+.nav-item .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nav-item .ver { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-item .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.progress { height: 4px; border-radius: 2px; background: var(--gray-bg); margin-top: 6px; overflow: hidden;
+  display: flex; }
+.progress span { display: block; height: 100%; }
+.empty { color: var(--muted); padding: 8px 10px; font-size: 13px; }
+
+main { padding: 18px 22px 40px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+.run-head { padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+.run-head .title { font-size: 20px; font-weight: 700; }
+.run-head .meta { color: var(--muted); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
+.run-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.pulse::before { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+.s-pending, .s-aborted { color: var(--gray); background: var(--gray-bg); }
+.s-waiting, .s-awaiting_approval, .s-interrupted { color: var(--amber); background: var(--amber-bg); }
+.s-deploying, .s-running, .s-starting { color: var(--blue); background: var(--blue-bg); }
+.s-baking { color: var(--violet); background: var(--violet-bg); }
+.s-succeeded { color: var(--green); background: var(--green-bg); }
+.s-failed, .s-rollback_failed { color: var(--red); background: var(--red-bg); }
+.s-rolled_back { color: var(--orange); background: var(--orange-bg); }
+.bar-succeeded { background: var(--green); } .bar-failed, .bar-rollback_failed { background: var(--red); }
+.bar-rolled_back { background: var(--orange); } .bar-deploying { background: var(--blue); }
+.bar-baking { background: var(--violet); } .bar-waiting { background: var(--amber); }
+
+.banner { margin-top: 14px; padding: 12px 14px; border-radius: 10px; display: flex; gap: 12px;
+  align-items: center; flex-wrap: wrap; border: 1px solid; }
+.banner .grow { flex: 1; min-width: 200px; }
+.banner.amber { background: var(--amber-bg); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
+.banner.red { background: var(--red-bg); border-color: color-mix(in srgb, var(--red) 35%, transparent); }
+.banner.blue { background: var(--blue-bg); border-color: color-mix(in srgb, var(--blue) 35%, transparent); }
+
+.section-title { font-size: 13px; font-weight: 650; margin: 22px 0 10px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .05em; }
+.pipeline { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; align-items: stretch; }
+.wave { flex: 1 0 240px; max-width: 360px; display: flex; flex-direction: column; gap: 8px; }
+.wave-head { display: flex; align-items: center; gap: 8px; padding: 0 2px; min-height: 26px; }
+.wave-head .name { font-weight: 650; }
+.wave-head .tags { color: var(--muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+.tag { border: 1px solid var(--border); border-radius: 5px; padding: 0 5px; font-size: 11.5px; }
+.arrow { align-self: center; color: var(--muted); font-size: 18px; flex: 0 0 auto; padding-top: 26px; }
+.region { padding: 10px 12px; border-left: 3px solid var(--border); }
+.region.st-succeeded { border-left-color: var(--green); } .region.st-failed,
+.region.st-rollback_failed { border-left-color: var(--red); } .region.st-rolled_back { border-left-color: var(--orange); }
+.region.st-deploying { border-left-color: var(--blue); } .region.st-baking { border-left-color: var(--violet); }
+.region.st-waiting { border-left-color: var(--amber); }
+.region .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.region .name { font-weight: 600; overflow-wrap: anywhere; }
+.region .msg { color: var(--muted); font-size: 12.5px; margin-top: 5px; overflow-wrap: anywhere; }
+.region .win { font-size: 12px; margin-top: 6px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.dot.open { background: var(--green); } .dot.closed { background: var(--gray); }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-top: 24px; }
+.tab { border: none; background: none; padding: 8px 12px; cursor: pointer; color: var(--muted);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 550; }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.tabpanel { padding-top: 12px; }
+.events { list-style: none; margin: 0; padding: 0; }
+.events li { display: grid; grid-template-columns: 150px 1fr; gap: 10px; padding: 6px 4px;
+  border-bottom: 1px solid var(--border); font-size: 13px; }
+.events li:last-child { border-bottom: none; }
+.events .t { color: var(--muted); font-size: 12px; }
+.events .r { font-weight: 600; margin-right: 6px; }
+.events .bad { color: var(--red); }
+.region pre.out { margin: 8px 0 0; padding: 6px 8px; font-size: 11.5px; background: var(--red-bg);
+  border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto; }
+.tabs .filter { margin-left: auto; align-self: center; font-size: 12.5px; color: var(--muted);
+  display: flex; gap: 6px; align-items: center; }
+pre.log { background: #0d1117; color: #d6dde6; padding: 12px 14px; border-radius: 10px; overflow: auto;
+  max-height: 480px; margin: 0; white-space: pre-wrap; word-break: break-word; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+tr:last-child td { border-bottom: none; }
+.table-wrap { overflow-x: auto; }
+
+dialog { border: 1px solid var(--border); border-radius: 12px; padding: 0; background: var(--panel);
+  color: var(--text); width: min(560px, calc(100vw - 32px)); box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+dialog::backdrop { background: rgba(10,14,20,.45); }
+dialog form { padding: 18px 20px; }
+dialog h3 { margin: 0 0 12px; font-size: 17px; }
+dialog label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+dialog input[type=text], dialog input[type=password] { width: 100%; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); }
+dialog .hint { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+dialog .check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
+.plan-preview { margin-top: 14px; max-height: 220px; overflow: auto; border: 1px solid var(--border);
+  border-radius: 8px; }
+
+#toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 20; }
+.toast { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+  padding: 10px 14px; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); max-width: 380px; }
+.toast.error { border-left-color: var(--red); }
+
+@media (max-width: 820px) {
+  .layout { grid-template-columns: 1fr; }
+  aside { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+  #runs { display: flex; gap: 6px; overflow-x: auto; }
+  #runs .nav-item { min-width: 200px; }
+  main { padding: 14px 16px 40px; }
+  .pipeline { flex-direction: column; }
+  .wave { max-width: none; flex-basis: auto; }
+  .arrow { transform: rotate(90deg); padding: 0; }
+  .events li { grid-template-columns: 1fr; gap: 2px; }
+  .user-chip label { display: none; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Deploy Train <span class="train" id="trainName"></span></h1>
+  <span class="spacer"></span>
+  <div class="user-chip" id="userChip"></div>
+  <button class="btn primary" id="newRunBtn">New run</button>
+</header>
+
+<div class="layout">
+  <aside>
+    <button class="nav-item" id="overviewNav"><div class="ver">Regions &amp; windows</div>
+      <div class="sub">Schedule and projected plan</div></button>
+    <h2>Runs</h2>
+    <div id="runs"><div class="empty">Loading…</div></div>
+  </aside>
+  <main id="main"></main>
+</div>
+
+<dialog id="newRunDialog">
+  <form method="dialog" id="newRunForm">
+    <h3>Start a new run</h3>
+    <label for="nrVersion">Version to deploy</label>
+    <input type="text" id="nrVersion" required pattern="[A-Za-z0-9][A-Za-z0-9._+\-]{0,99}" placeholder="v1.5.0" autocomplete="off">
+    <label for="nrPrev">Previous version (rollback target)</label>
+    <input type="text" id="nrPrev" pattern="[A-Za-z0-9][A-Za-z0-9._+\-]{0,99}" placeholder="v1.4.0" autocomplete="off">
+    <div class="hint">Used by the rollback command if a region fails.</div>
+    <label class="check"><input type="checkbox" id="nrDry"> Dry run (print commands, skip bake)</label>
+    <div class="plan-preview" id="nrPlan"><div class="empty">Loading projected schedule…</div></div>
+    <div class="buttons">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="nrSubmit">Start train</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirmDialog">
+  <form method="dialog">
+    <h3 id="cfTitle"></h3>
+    <div id="cfBody"></div>
+    <div class="buttons">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" id="cfOk">Confirm</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="tokenDialog">
+  <form method="dialog">
+    <h3>Access token required</h3>
+    <div class="hint">This UI is protected by <code>DEPLOYTRAIN_UI_TOKEN</code>. Ask the operator for the token.</div>
+    <label for="tokenInput">Token</label>
+    <input type="password" id="tokenInput" autocomplete="off">
+    <div class="buttons"><button class="btn primary" value="ok">Save</button></div>
+  </form>
+</dialog>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const STATUS_LABEL = {
+  pending: "Pending", waiting: "Waiting for window", deploying: "Deploying", baking: "Baking",
+  succeeded: "Succeeded", failed: "Failed", rolled_back: "Rolled back", rollback_failed: "Rollback failed",
+  aborted: "Aborted", running: "Running", awaiting_approval: "Awaiting approval",
+  interrupted: "Interrupted", starting: "Starting",
+};
+const ACTIVE = new Set(["deploying", "baking", "running", "starting"]);
+const pill = (s) => `<span class="pill s-${esc(s)}${ACTIVE.has(s) ? " pulse" : ""}">${esc(STATUS_LABEL[s] || s)}</span>`;
+
+let state = { config: null, runs: [], selected: null, run: null, tab: "events", whoami: null, inflight: false, showChecks: false };
+
+// ---- API ------------------------------------------------------------------
+async function api(path, body) {
+  const headers = { "X-Deploytrain-User": store.get("dt-user") || "" };
+  const token = store.get("dt-token");
+  if (token) headers["Authorization"] = "Bearer " + token;
+  const opts = { headers };
+  if (body !== undefined) {
+    opts.method = "POST";
+    headers["Content-Type"] = "application/json";
+    headers["X-Requested-With"] = "deploytrain";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (res.status === 401) { askToken(); throw new Error("Authentication required"); }
+  if (!res.ok) { const e = new Error(data.error || res.statusText); e.status = res.status; throw e; }
+  return data;
+}
+
+function toast(msg, error = false) {
+  const el = document.createElement("div");
+  el.className = "toast" + (error ? " error" : "");
+  el.textContent = msg;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), error ? 7000 : 3500);
+}
+
+function askToken() {
+  const d = $("tokenDialog");
+  if (d.open) return;
+  $("tokenInput").value = "";
+  d.showModal();
+  d.onclose = () => { if ($("tokenInput").value) { store.set("dt-token", $("tokenInput").value); refreshAll(); } };
+}
+
+function confirmAction(title, bodyHtml, okLabel, okClass = "primary") {
+  return new Promise((resolve) => {
+    const d = $("confirmDialog");
+    $("cfTitle").textContent = title;
+    $("cfBody").innerHTML = bodyHtml;
+    $("cfOk").textContent = okLabel;
+    $("cfOk").className = "btn " + okClass;
+    d.returnValue = "";
+    d.onclose = () => resolve(d.returnValue === "ok");
+    d.showModal();
+  });
+}
+
+// ---- time formatting ------------------------------------------------------
+function rel(iso) {
+  if (!iso) return "";
+  const s = Math.round((Date.now() - new Date(iso)) / 1000);
+  const a = Math.abs(s);
+  const f = a < 60 ? `${a}s` : a < 3600 ? `${Math.round(a / 60)}m` : a < 86400 ? `${(a / 3600).toFixed(a < 36000 ? 1 : 0)}h` : `${(a / 86400).toFixed(1)}d`;
+  return s >= 0 ? `${f} ago` : `in ${f}`;
+}
+function dur(fromIso, toIso) {
+  if (!fromIso) return "";
+  const s = Math.max(0, Math.round(((toIso ? new Date(toIso) : new Date()) - new Date(fromIso)) / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+}
+function fmtTime(iso, tz) {
+  if (!iso) return "";
+  try {
+    return new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", timeZone: tz, timeZoneName: tz ? "short" : undefined }).format(new Date(iso));
+  } catch { return iso; }
+}
+
+// ---- rendering: sidebar -----------------------------------------------------
+function runStatus(r) { return r.starting ? "starting" : r.interrupted ? "interrupted" : r.status; }
+
+function renderRuns() {
+  const el = $("runs");
+  $("overviewNav").classList.toggle("active", !state.selected);
+  if (!state.runs.length) { el.innerHTML = `<div class="empty">No runs yet. Start one with “New run”.</div>`; return; }
+  el.innerHTML = state.runs.map((r) => {
+    const segs = ["succeeded", "rolled_back", "failed", "rollback_failed", "baking", "deploying", "waiting"]
+      .map((k) => r.counts[k] ? `<span class="bar-${k}" style="width:${(100 * r.counts[k]) / r.total}%"></span>` : "").join("");
+    const done = r.counts.succeeded || 0;
+    return `<button class="nav-item${state.selected === r.version ? " active" : ""}" data-version="${esc(r.version)}">
+      <div class="row"><span class="ver">${esc(r.version)}</span>${pill(runStatus(r))}</div>
+      <div class="sub">${done}/${r.total} regions · started ${esc(rel(r.started_at))}</div>
+      <div class="progress">${segs}</div></button>`;
+  }).join("");
+  el.querySelectorAll(".nav-item").forEach((b) => b.onclick = () => select(b.dataset.version));
+}
+
+// ---- rendering: run ---------------------------------------------------------
+function regionWindow(cfgRegion, status) {
+  if (!cfgRegion || ["succeeded", "rolled_back", "waiting"].includes(status)) return "";
+  if (cfgRegion.open_now)
+    return `<div class="win"><span class="dot open"></span>${esc(cfgRegion.window)} open${cfgRegion.window_end ? " until " + esc(fmtTime(cfgRegion.window_end, cfgRegion.timezone)) : ""}</div>`;
+  if (cfgRegion.next_start)
+    return `<div class="win"><span class="dot closed"></span>${esc(cfgRegion.window)} opens ${esc(fmtTime(cfgRegion.next_start, cfgRegion.timezone))} (${esc(rel(cfgRegion.next_start))})</div>`;
+  return `<div class="win"><span class="dot closed"></span>${esc(cfgRegion.window)}: no window in the next 90 days</div>`;
+}
+
+function renderPipeline(run) {
+  const cfg = state.config;
+  return `<div class="pipeline">` + cfg.waves.map((w, i) => {
+    const winfo = (run && run.waves && run.waves[w.name]) || {};
+    const appr = winfo.approval;
+    const tags = [
+      w.max_parallel > 1 ? `<span class="tag">×${w.max_parallel} parallel</span>` : "",
+      w.gap ? `<span class="tag">gap ${esc(w.gap)}</span>` : "",
+      w.approval ? `<span class="tag" title="${appr && appr.by ? "approved by " + esc(appr.by) : "requires approval"}">${appr && appr.status === "approved" ? "✓ approved" : appr && appr.status === "pending" ? "✋ needs approval" : "✋ approval"}</span>` : "",
+    ].join("");
+    const regions = w.regions.map((cr) => {
+      const rs = run ? run.regions[cr.name] || { status: "pending" } : null;
+      const st = rs ? rs.status : null;
+      return `<div class="card region st-${esc(st || "none")}">
+        <div class="row"><span class="name">${esc(cr.name)}</span>${st ? pill(st) : `<span class="tag">bake ${esc(cr.bake)}</span>`}</div>
+        ${rs && rs.message ? `<div class="msg">${esc(rs.message)}</div>` : ""}
+        ${rs && rs.output ? `<pre class="out mono">${esc(rs.output)}</pre>` : ""}
+        ${rs && rs.started_at ? `<div class="msg">started ${esc(rel(rs.started_at))}${rs.finished_at ? " · took " + esc(dur(rs.started_at, rs.finished_at)) : ""}</div>` : ""}
+        ${regionWindow(cr, st)}
+      </div>`;
+    }).join("");
+    return (i ? `<div class="arrow">→</div>` : "") +
+      `<div class="wave"><div class="wave-head"><span class="name">${esc(w.name)}</span><span class="tags">${tags}</span></div>${regions}</div>`;
+  }).join("") + `</div>`;
+}
+
+function renderEvents(run) {
+  let evs = (run.events || []).slice().reverse();
+  if (!state.showChecks) evs = evs.filter((e) => !/^(\[dry-run\] )?health check:/.test(e.message));
+  if (!evs.length) return `<div class="empty">No events yet.</div>`;
+  return `<ul class="events">` + evs.map((e) => {
+    const bad = /FAILED|failed|abort/.test(e.message);
+    return `<li><span class="t" title="${esc(e.at)}">${esc(fmtTime(e.at))}</span>
+      <span>${e.region ? `<span class="r">${esc(e.region)}</span>` : ""}<span class="${bad ? "bad" : ""}">${esc(e.message)}</span></span></li>`;
+  }).join("") + `</ul>`;
+}
+
+function renderActions(run) {
+  const acts = (run.actions || []).slice().reverse();
+  if (!acts.length) return `<div class="empty">No UI actions recorded for this run.</div>`;
+  return `<div class="table-wrap"><table><tr><th>When</th><th>Who</th><th>Action</th><th>Details</th></tr>` +
+    acts.map((a) => {
+      const { at, user, action, version, ...rest } = a;
+      const details = Object.entries(rest).filter(([, v]) => v !== null && v !== false).map(([k, v]) => `${k}=${v}`).join(", ");
+      return `<tr><td>${esc(fmtTime(at))}</td><td>${esc(user)}</td><td>${esc(action)}</td><td>${esc(details)}</td></tr>`;
+    }).join("") + `</table></div>`;
+}
+
+function renderRun() {
+  const run = state.run;
+  const main = $("main");
+  if (!run) { main.innerHTML = `<div class="empty">Loading…</div>`; return; }
+  const st = runStatus(run);
+  const running = run.active;
+  const canResume = !run.starting && !running && ["failed", "aborted", "interrupted"].includes(st);
+  const hasFailed = run.regions && Object.values(run.regions).some((r) => ["failed", "rolled_back", "rollback_failed"].includes(r.status));
+  const actions = [
+    running ? `<button class="btn danger" data-act="abort" ${run.abort_requested ? "disabled" : ""}>${run.abort_requested ? "Aborting…" : "Abort"}</button>` : "",
+    canResume && hasFailed ? `<button class="btn primary" data-act="retry">Retry failed regions</button>` : "",
+    canResume && !hasFailed ? `<button class="btn primary" data-act="resume">Resume</button>` : "",
+  ].join("");
+
+  const banners = [];
+  if (run.pending_approval) {
+    banners.push(`<div class="banner amber"><span class="grow"><strong>Wave “${esc(run.pending_approval)}” is waiting for approval.</strong>
+      ${run.approval_submitted ? " Approval submitted, waiting for the train to pick it up…" : " Review the earlier waves, then approve to continue."}</span>
+      ${run.approval_submitted ? "" : `<button class="btn warn" data-act="approve">Approve ${esc(run.pending_approval)}</button>`}</div>`);
+  }
+  if (run.interrupted) banners.push(`<div class="banner amber"><span class="grow"><strong>The train process stopped unexpectedly.</strong> Its state says it was still running. Resume to continue from where it left off.</span></div>`);
+  if (st === "failed") banners.push(`<div class="banner red"><span class="grow"><strong>Train halted.</strong> Check the failed region below and the log, fix the issue, then retry the failed regions.</span></div>`);
+  if (run.starting) banners.push(`<div class="banner blue"><span class="grow">Starting the train process…</span></div>`);
+
+  const showLog = state.tab === "log", showActs = state.tab === "actions";
+  main.innerHTML = `
+    <div class="card run-head">
+      <div><div class="title">${esc(run.version)}</div>
+        <div class="meta">${run.previous_version ? `<span>rollback target <code>${esc(run.previous_version)}</code></span>` : ""}
+          ${run.started_at ? `<span title="${esc(run.started_at)}">started ${esc(rel(run.started_at))}</span>` : ""}
+          ${run.started_at ? `<span>duration ${esc(dur(run.started_at, run.finished_at))}</span>` : ""}</div></div>
+      ${pill(st)}
+      <div class="actions">${actions}</div>
+    </div>
+    ${banners.join("")}
+    <div class="section-title">Pipeline</div>
+    ${run.regions ? renderPipeline(run) : ""}
+    <div class="tabs">
+      <button class="tab ${!showLog && !showActs ? "active" : ""}" data-tab="events">Events</button>
+      <button class="tab ${showLog ? "active" : ""}" data-tab="log">Log</button>
+      <button class="tab ${showActs ? "active" : ""}" data-tab="actions">Who did what</button>
+      ${!showLog && !showActs ? `<label class="filter"><input type="checkbox" id="showChecks" ${state.showChecks ? "checked" : ""}> Show health checks</label>` : ""}
+    </div>
+    <div class="tabpanel">${showLog ? `<pre class="log" id="logPre">${esc(run.log || "(no output yet)")}</pre>` : showActs ? renderActions(run) : run.events ? renderEvents(run) : ""}</div>`;
+
+  main.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { state.tab = b.dataset.tab; renderRun(); });
+  const sc = $("showChecks");
+  if (sc) sc.onchange = () => { state.showChecks = sc.checked; renderRun(); };
+  main.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => doAction(b.dataset.act));
+  const pre = $("logPre");
+  if (pre) pre.scrollTop = pre.scrollHeight;
+}
+
+// ---- rendering: overview ----------------------------------------------------
+async function renderOverview() {
+  const main = $("main");
+  let planRows = "";
+  try {
+    const p = await api("/api/plan");
+    planRows = p.waves.flatMap((w) => w.regions.map((r) =>
+      `<tr><td>${esc(w.name)}</td><td>${esc(r.name)}</td><td>${esc(fmtTime(r.start))}</td><td>${esc(fmtTime(r.end))}</td><td>${esc(r.wait || "–")}</td></tr>`)).join("");
+  } catch (e) { planRows = `<tr><td colspan="5">${esc(e.message)}</td></tr>`; }
+  if (state.selected) return; // user navigated away while loading
+  const rows = state.config.waves.flatMap((w) => w.regions.map((r) => `<tr>
+      <td>${esc(w.name)}</td><td><strong>${esc(r.name)}</strong></td><td>${esc(r.window)}<div class="msg">${esc(r.timezone)}</div></td>
+      <td>${r.open_now ? `<span class="pill s-succeeded">Open</span>` : `<span class="pill s-pending">Closed</span>`}</td>
+      <td>${r.open_now ? (r.window_end ? "until " + esc(fmtTime(r.window_end, r.timezone)) : "") : r.next_start ? esc(fmtTime(r.next_start, r.timezone)) + `<div class="msg">${esc(rel(r.next_start))}</div>` : "none in 90 days"}</td>
+      <td>${esc(r.bake)}</td></tr>`)).join("");
+  main.innerHTML = `
+    <div class="card run-head"><div><div class="title">Regions &amp; windows</div>
+      <div class="meta"><span>rollback scope: ${esc(state.config.rollback_scope)}</span><span>Slack: ${state.config.slack ? "on" : "off"}</span></div></div></div>
+    <div class="section-title">Pipeline</div>
+    ${renderPipeline(null)}
+    <div class="section-title">Windows right now</div>
+    <div class="card table-wrap"><table><tr><th>Wave</th><th>Region</th><th>Window</th><th>Now</th><th>Next change</th><th>Bake</th></tr>${rows}</table></div>
+    <div class="section-title">If you started a run now (projected)</div>
+    <div class="card table-wrap"><table><tr><th>Wave</th><th>Region</th><th>Start</th><th>Done</th><th>Waits</th></tr>${planRows}</table></div>`;
+}
+
+// ---- actions ----------------------------------------------------------------
+async function doAction(act) {
+  const run = state.run;
+  const v = esc(run.version);
+  let ok, call;
+  if (act === "abort") {
+    ok = await confirmAction(`Abort ${run.version}?`, `<p>The train stops at its next checkpoint (within ~30s). Regions that are mid-deploy are marked aborted. Nothing is rolled back automatically. You can resume later.</p>`, "Abort train", "danger");
+    call = () => api("/api/runs/abort", { version: run.version });
+  } else if (act === "approve") {
+    const w = run.pending_approval;
+    const regions = state.config.waves.find((x) => x.name === w)?.regions.map((r) => r.name).join(", ");
+    ok = await confirmAction(`Approve wave “${w}”?`, `<p>This lets <strong>${v}</strong> roll out to: <strong>${esc(regions)}</strong>.</p><p class="hint">Recorded as approved by <strong>${esc(state.whoami?.user || "anonymous")}</strong>.</p>`, "Approve", "warn");
+    call = () => api("/api/runs/approve", { version: run.version, wave: w });
+  } else if (act === "resume" || act === "retry") {
+    const retry = act === "retry";
+    ok = await confirmAction(retry ? `Retry failed regions of ${run.version}?` : `Resume ${run.version}?`,
+      `<p>Regions that already succeeded are skipped. ${retry ? "Failed and rolled-back regions are deployed again." : ""}</p>`, retry ? "Retry" : "Resume");
+    call = () => api("/api/runs/resume", { version: run.version, retry_failed: retry });
+  }
+  if (!ok) return;
+  try { await call(); toast("Done."); } catch (e) { toast(e.message, true); }
+  refreshAll();
+}
+
+async function openNewRun() {
+  const d = $("newRunDialog");
+  $("nrVersion").value = "";
+  const lastGood = state.runs.find((r) => r.status === "succeeded");
+  $("nrPrev").value = lastGood ? lastGood.version : "";
+  $("nrDry").checked = false;
+  d.returnValue = "";
+  d.showModal();
+  $("nrVersion").focus();
+  try {
+    const p = await api("/api/plan");
+    $("nrPlan").innerHTML = `<table><tr><th>Wave</th><th>Region</th><th>Projected start</th></tr>` +
+      p.waves.flatMap((w) => w.regions.map((r) => `<tr><td>${esc(w.name)}</td><td>${esc(r.name)}</td><td>${esc(fmtTime(r.start))}</td></tr>`)).join("") + `</table>`;
+  } catch (e) { $("nrPlan").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+$("newRunDialog").addEventListener("close", async () => {
+  if ($("newRunDialog").returnValue !== "ok") return;
+  const version = $("nrVersion").value.trim();
+  try {
+    await api("/api/runs/start", { version, previous_version: $("nrPrev").value.trim() || null, dry_run: $("nrDry").checked });
+    toast(`Started ${version}`);
+    select(version);
+  } catch (e) { toast(e.message, true); }
+});
+
+// ---- navigation & polling ---------------------------------------------------
+function select(version) {
+  state.selected = version || null;
+  state.run = null;
+  state.tab = "events";
+  history.replaceState(null, "", version ? "#run=" + encodeURIComponent(version) : "#");
+  renderRuns();
+  if (version) { renderRun(); refreshRun(); } else renderOverview();
+}
+
+async function refreshRun() {
+  if (!state.selected) return;
+  const v = state.selected;
+  try {
+    const run = await api("/api/run?version=" + encodeURIComponent(v));
+    if (state.selected !== v) return;
+    state.run = run;
+    // Don't re-render while a dialog is open or text is selected (keeps the UI usable).
+    if (!document.querySelector("dialog[open]") && !String(window.getSelection())) renderRun();
+  } catch (e) {
+    if (e.status === 404) { state.run = { version: v, starting: true, log: "" }; renderRun(); }
+  }
+}
+
+async function refreshAll() {
+  if (state.inflight) return;
+  state.inflight = true;
+  try {
+    const [config, runs] = await Promise.all([api("/api/config"), api("/api/runs")]);
+    state.config = config;
+    state.runs = runs;
+    $("trainName").textContent = "· " + config.train;
+    renderRuns();
+    if (state.selected) await refreshRun();
+    else if (!document.querySelector("dialog[open]")) await renderOverview();
+  } catch (e) {
+    if (!/Authentication/.test(e.message)) toast("Can't reach the deploytrain server: " + e.message, true);
+  } finally { state.inflight = false; }
+}
+
+async function initUser() {
+  try { state.whoami = await api("/api/whoami"); } catch { return; }
+  const chip = $("userChip");
+  const viaProxy = state.whoami.user !== "anonymous" && state.whoami.user !== (store.get("dt-user") || "");
+  if (viaProxy) { chip.textContent = "Signed in as " + state.whoami.user; return; }
+  chip.innerHTML = `<label for="userName">You:</label><input id="userName" placeholder="your name" value="${esc(store.get("dt-user") || "")}">`;
+  $("userName").onchange = async (e) => { store.set("dt-user", e.target.value.trim()); state.whoami = await api("/api/whoami"); };
+}
+
+$("newRunBtn").onclick = openNewRun;
+$("overviewNav").onclick = () => select(null);
+window.addEventListener("hashchange", () => {
+  const m = location.hash.match(/run=([^&]+)/);
+  const v = m ? decodeURIComponent(m[1]) : null;
+  if (v !== state.selected) select(v);
+});
+
+(async function init() {
+  const m = location.hash.match(/run=([^&]+)/);
+  state.selected = m ? decodeURIComponent(m[1]) : null;
+  await initUser();
+  await refreshAll();
+  setInterval(refreshAll, 4000);
+})();
+</script>
+</body>
+</html>
