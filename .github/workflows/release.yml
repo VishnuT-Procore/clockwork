@@ -125,7 +125,35 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish to PyPI
+        id: publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        continue-on-error: true
+      # If the publish action fails, retry once with twine and surface PyPI's exact error as
+      # an annotation, so it is visible on the run summary without opening the logs.
+      - name: Retry upload and report PyPI's error
+        if: steps.publish.outcome == 'failure'
+        run: |
+          set -uo pipefail
+          oidc=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=pypi" | jq -r .value)
+          resp=$(curl -sS -X POST https://pypi.org/_/oidc/mint-token -d "{\"token\": \"$oidc\"}")
+          token=$(echo "$resp" | jq -r '.token // empty')
+          if [ -z "$token" ]; then
+            echo "::error title=PyPI trusted publishing token exchange failed::$(echo "$resp" | tr '\n' ' ' | cut -c1-900)"
+            exit 1
+          fi
+          pip install -q twine
+          if out=$(TWINE_USERNAME=__token__ TWINE_PASSWORD="$token" \
+                   twine upload --non-interactive --skip-existing --verbose dist/* 2>&1); then
+            echo "$out" | tail -5
+            echo "::warning title=PyPI upload::The publish action failed but the twine retry succeeded."
+            exit 0
+          fi
+          echo "$out" | tail -60
+          msg=$(echo "$out" | grep -vE "^\s*$|Uploading|INFO|━|[0-9.]+/[0-9.]+ kB" | tail -12 | tr '\n' ' ' | cut -c1-900)
+          echo "::error title=PyPI rejected the upload::$msg"
+          exit 1
 
   image:
     needs: [prepare, pypi]
