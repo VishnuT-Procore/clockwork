@@ -1,0 +1,88 @@
+# Example deployment train. Times in `windows` are local to each profile's timezone.
+train:
+  name: api-service
+  # Templated with {train} {region} {wave} {version} {previous_version} and any region `vars`.
+  # The same values are exported as env vars: DT_REGION, DT_VERSION, DT_CLUSTER, ...
+  # Use {{ and }} for literal braces.
+  deploy_command: "scripts/deploy.sh {region} {version} {cluster}"
+  health_check_command: "scripts/health.sh {region}"
+  rollback_command: "scripts/rollback.sh {region} {previous_version}"
+  health_check_interval: 2m       # how often to probe during bake
+  default_bake: 30m
+  deploy_timeout: 45m
+  estimated_deploy_duration: 15m  # only used by `deploytrain plan`
+  window_wait_timeout: 3d         # fail a region if its next window is further away than this
+  default_window: business-us
+  rollback_scope: region          # none | region | wave | train
+  blackouts:                      # apply to every window profile
+    - start: 2026-12-21
+      end: 2027-01-02             # inclusive date
+      reason: holiday change freeze
+
+windows:
+  business-us:
+    timezone: America/New_York
+    min_remaining: 1h             # don't start a deploy with < 1h of window left
+    windows:
+      - days: mon-thu
+        start: "09:00"
+        end: "16:00"
+  business-eu:
+    timezone: Europe/Dublin
+    min_remaining: 1h
+    windows:
+      - days: mon-thu
+        start: "09:00"
+        end: "16:00"
+    blackouts:
+      - start: 2026-11-05T00:00
+        end: 2026-11-05T23:59
+        reason: EU marketing launch
+  business-apac:
+    timezone: Asia/Tokyo
+    min_remaining: 1h
+    windows:
+      - days: [mon, tue, wed, thu]
+        start: "10:00"
+        end: "17:00"
+  off-peak-us:
+    timezone: America/Los_Angeles
+    min_remaining: 2h
+    windows:
+      - days: sun-thu             # overnight window crossing midnight
+        start: "22:00"
+        end: "05:00"
+
+waves:
+  - name: canary
+    regions:
+      - name: us-west-2-canary
+        window: off-peak-us
+        bake: 2h
+        vars: {cluster: canary-1}
+  - name: wave-1
+    gap: 1h                       # cool-down after the canary wave completes
+    regions:
+      - name: us-west-2
+        vars: {cluster: prod-usw2}
+  - name: wave-2
+    max_parallel: 2
+    bake: 1h
+    regions:
+      - name: us-east-1
+        vars: {cluster: prod-use1}
+      - name: eu-west-1
+        window: business-eu
+        vars: {cluster: prod-euw1}
+  - name: wave-3
+    max_parallel: 3
+    regions:
+      - name: eu-central-1
+        window: business-eu
+        vars: {cluster: prod-euc1}
+      - name: ap-northeast-1
+        window: business-apac
+        vars: {cluster: prod-apne1}
+      - name: ap-southeast-2
+        window: business-apac
+        vars: {cluster: prod-apse2}
