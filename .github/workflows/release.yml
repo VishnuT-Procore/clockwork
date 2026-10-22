@@ -1,27 +1,111 @@
-# Publishes to PyPI when a version tag (v*) is pushed.
-# Uses PyPI trusted publishing, so no API token is stored in the repo. One-time setup is
-# described in CONTRIBUTING.md under "Releasing".
+# Releases deploytrain: PyPI package, container images and a GitHub release.
+#
+# Start it either way:
+#   - Actions → Release → Run workflow, on main, with the version (e.g. 0.1.0). The
+#     workflow creates the v<version> tag itself, so nobody needs to push one.
+#   - Push a v<version> tag.
+#
+# Before publishing anything it checks that the version matches pyproject.toml, that the
+# tag doesn't exist yet (manual runs), and that CI passed on the commit. Then it publishes
+# to PyPI (trusted publishing, no stored token), pushes multi-arch images to GHCR, and
+# finally creates the GitHub release and tag. If a later step fails, fix the cause and use
+# "Re-run failed jobs".
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the v (must match pyproject.toml), e.g. 0.1.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/deploytrain
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Work out and validate the version
+        id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::Run the release from main (this run is on $GITHUB_REF)"; exit 1
+            fi
+            version="${INPUT_VERSION#v}"
+            tag="v$version"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "::error::Tag $tag already exists"; exit 1
+            fi
+          else
+            tag="$GITHUB_REF_NAME"
+            version="${tag#v}"
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
+            echo "::error::'$version' is not a version like 1.2.3 or 1.2.3rc1"; exit 1
+          fi
+          pkg=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          init=$(python3 -c "import re; print(re.search(r'__version__ = \"(.+)\"', open('deploytrain/__init__.py').read()).group(1))")
+          if [ "$pkg" != "$version" ] || [ "$init" != "$version" ]; then
+            echo "::error::Version $version doesn't match pyproject.toml ($pkg) / __init__.py ($init). Bump them on main first."; exit 1
+          fi
+          sha=$(git rev-parse HEAD)
+          echo "Releasing $tag from $sha"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require green CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.v.outputs.sha }}
+        run: |
+          set -euo pipefail
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&event=push&per_page=50" \
+            --jq '[.workflow_runs[] | select(.name == "CI" or .name == "Docker")] | group_by(.name) | map(max_by(.created_at)) | map("\(.name)=\(.status)/\(.conclusion)") | join(" ")')
+          echo "Latest runs for $SHA: ${runs:-none}"
+          for wf in CI Docker; do
+            case " $runs " in
+              *" $wf=completed/success "*) ;;
+              *) echo "::error::$wf has not passed on $SHA yet ($runs). Wait for it, then run the release again."; exit 1 ;;
+            esac
+          done
+
   build:
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Check tag matches package version
-        run: |
-          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
       - run: pip install build twine
       - run: python -m build
       - run: twine check --strict dist/*
@@ -30,7 +114,7 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
+  pypi:
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
@@ -43,8 +127,43 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
+  image:
+    needs: [prepare, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.tag }}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
   github-release:
-    needs: publish
+    needs: [prepare, pypi, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -53,6 +172,11 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --generate-notes
+      - name: Create the GitHub release (and the tag, for manual runs)
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+            --title "deploytrain ${TAG#v}" --generate-notes

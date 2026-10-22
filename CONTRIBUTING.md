@@ -72,16 +72,31 @@ By contributing, you agree that your contributions are licensed under the
 
 ## Releasing (maintainers)
 
-Releases are published to PyPI by `.github/workflows/release.yml` using
-[trusted publishing](https://docs.pypi.org/trusted-publishers/), so no API token is stored.
+`.github/workflows/release.yml` publishes a release in this order:
+1. the PyPI package, using [trusted publishing](https://docs.pypi.org/trusted-publishers/),
+   so no API token is stored
+2. multi-arch container images: `ghcr.io/<owner>/deploytrain:<version>`, `:<major>.<minor>`
+   and `:latest`
+3. a GitHub release with generated notes, which also creates the tag
 
 One-time setup:
-1. On PyPI, add a pending trusted publisher for the project `deploytrain`, with this repo,
+1. On PyPI, add a trusted publisher for the project `deploytrain`, with this repo,
    workflow `release.yml` and environment `pypi`.
 2. In the GitHub repo settings, create an environment named `pypi`. Optionally require a
    reviewer for it.
 
 To cut a release:
-1. Bump `version` in `pyproject.toml` and `deploytrain/__init__.py`.
-2. Move the "Unreleased" notes in `CHANGELOG.md` under the new version.
-3. Merge to `main`, then tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+1. Bump `version` in `pyproject.toml` and `deploytrain/__init__.py`. Move the
+   "Unreleased" notes in `CHANGELOG.md` under the new version. Merge to `main`, and wait
+   for CI and Docker to pass.
+2. Go to **Actions → Release → Run workflow**, keep the branch on `main`, and enter the
+   version (e.g. `0.2.0`). Pushing a `v0.2.0` tag works too.
+
+The workflow stops before publishing anything if:
+- it's run from a branch other than `main`
+- the version doesn't match `pyproject.toml`
+- the tag already exists
+- CI or Docker hasn't passed on that commit
+
+If a later step fails, fix the cause and use **Re-run failed jobs**. Steps that already
+published aren't repeated.
