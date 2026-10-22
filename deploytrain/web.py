@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import signal
+import socketserver
 import subprocess
 import sys
 import threading
@@ -37,6 +38,17 @@ USER_HEADERS = ("X-Forwarded-User", "X-Auth-Request-User", "X-Forwarded-Email",
                 "X-Auth-Request-Email")
 LOG_TAIL_LINES = 300
 SHUTDOWN_GRACE_SECONDS = 20.0
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind() calls socket.getfqdn(), a reverse DNS lookup that can block
+        # for many seconds (notably on macOS). The name only feeds CGI's SERVER_NAME.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = host, port
 
 
 class ApiError(Exception):
@@ -398,7 +410,7 @@ def serve(cfg: TrainConfig, config_path: str, host: str = "127.0.0.1", port: int
         log.warning("UI is listening on %s without DEPLOYTRAIN_UI_TOKEN; anyone who can reach it "
                     "can dispatch trains and pull the brake. Put it behind an auth proxy or set a token.", host)
     app = App(cfg, config_path, token)
-    httpd = ThreadingHTTPServer((host, port), make_handler(app))
+    httpd = Server((host, port), make_handler(app))
     log.info("deploytrain UI for %r on http://%s:%d", cfg.name, host, port)
 
     def on_sigterm(signum, frame):  # `docker stop`, Kubernetes pod termination

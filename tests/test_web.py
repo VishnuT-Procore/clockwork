@@ -4,7 +4,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 
 import pytest
 
@@ -13,7 +12,7 @@ from deploytrain.notify import Notifier
 from deploytrain.train import (
     AT_SIGNAL, SUCCEEDED, Train, clear_signal, signal_path, state_path,
 )
-from deploytrain.web import App, make_handler
+from deploytrain.web import App, Server, make_handler
 
 from test_deploytrain import FakeClock, FakeRunner, dt, make_cfg
 
@@ -100,7 +99,7 @@ def server(tmp_path, request):
     path = write_cfg(tmp_path, signal)
     cfg = config.load(path)
     app = App(cfg, str(path), token="s3cret")
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+    httpd = Server(("127.0.0.1", 0), make_handler(app))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}", cfg
     httpd.shutdown()

@@ -126,3 +126,20 @@ def _get(url):
             return json.loads(r.read())
     except OSError:
         return None
+
+
+def test_ui_server_starts_without_reverse_dns(monkeypatch):
+    # HTTPServer would call socket.getfqdn(), which can hang for many seconds on macOS.
+    from http.server import BaseHTTPRequestHandler
+
+    from deploytrain.web import Server
+
+    def boom(*a):
+        raise AssertionError("reverse DNS lookup during startup")
+
+    monkeypatch.setattr(socket, "getfqdn", boom)
+    server = Server(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    try:
+        assert server.server_name == "127.0.0.1" and server.server_port > 0
+    finally:
+        server.server_close()
