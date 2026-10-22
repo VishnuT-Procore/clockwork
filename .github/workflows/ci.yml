@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
 
 permissions:
@@ -26,7 +26,22 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
-      - run: python -m pytest -q
+      - run: python -m pytest -q --junitxml=junit.xml
+      - name: Annotate test failures
+        if: failure()
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+          try:
+              root = ET.parse("junit.xml").getroot()
+          except (OSError, ET.ParseError):
+              raise SystemExit(0)
+          for case in root.iter("testcase"):
+              for bad in list(case.findall("failure")) + list(case.findall("error")):
+                  name = f"{case.get('classname')}::{case.get('name')}"
+                  detail = (bad.get("message") or "") + "\n" + (bad.text or "")[-1500:]
+                  detail = detail.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+                  print(f"::error title={name}::{detail}")
       - name: Validate example config
         run: deploytrain -c examples/train.yaml plan
 
