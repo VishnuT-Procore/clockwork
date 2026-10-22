@@ -20,7 +20,7 @@ FROM python:${PYTHON_VERSION}-slim
 
 LABEL org.opencontainers.image.title="deploytrain" \
       org.opencontainers.image.description="Deployment train: roll releases out stop by stop, within each platform's timetable" \
-      org.opencontainers.image.source="https://github.com/VishnuT-Procore/clockwork" \
+      org.opencontainers.image.source="https://github.com/VishnuT-Procore/traintraintrain" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 ENV PYTHONUNBUFFERED=1 \

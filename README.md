@@ -1,6 +1,6 @@
 # deploytrain
 
-[![CI](https://github.com/VishnuT-Procore/clockwork/actions/workflows/ci.yml/badge.svg)](https://github.com/VishnuT-Procore/clockwork/actions/workflows/ci.yml)
+[![CI](https://github.com/VishnuT-Procore/traintraintrain/actions/workflows/ci.yml/badge.svg)](https://github.com/VishnuT-Procore/traintraintrain/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
@@ -53,7 +53,7 @@ terraform, CodeDeploy, etc.), and deploytrain decides *when* and *where* to run 
 Requires Python 3.10+, on Linux or macOS.
 
 ```
-pip install "git+https://github.com/VishnuT-Procore/clockwork"
+pip install "git+https://github.com/VishnuT-Procore/traintraintrain"
 ```
 
 Or use the container image; see [Docker and Kubernetes](#docker-and-kubernetes).

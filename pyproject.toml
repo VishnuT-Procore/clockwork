@@ -34,10 +34,10 @@ classifiers = [
 dev = ["pytest>=7"]
 
 [project.urls]
-Homepage = "https://github.com/VishnuT-Procore/clockwork"
-Source = "https://github.com/VishnuT-Procore/clockwork"
-Issues = "https://github.com/VishnuT-Procore/clockwork/issues"
-Changelog = "https://github.com/VishnuT-Procore/clockwork/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/VishnuT-Procore/traintraintrain"
+Source = "https://github.com/VishnuT-Procore/traintraintrain"
+Issues = "https://github.com/VishnuT-Procore/traintraintrain/issues"
+Changelog = "https://github.com/VishnuT-Procore/traintraintrain/blob/main/CHANGELOG.md"
 
 [project.scripts]
 deploytrain = "deploytrain.cli:main"

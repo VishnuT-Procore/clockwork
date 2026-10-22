@@ -6,7 +6,7 @@ that dispatches trains and pulls their brakes, so security reports are taken ser
 ## Reporting a vulnerability
 
 **Please don't open a public issue.** Report it privately through
-[GitHub security advisories](https://github.com/VishnuT-Procore/clockwork/security/advisories/new)
+[GitHub security advisories](https://github.com/VishnuT-Procore/traintraintrain/security/advisories/new)
 or email vishnuvardhan.777@gmail.com.
 
 Please include what you found, how to reproduce it, and the impact you think it has. You

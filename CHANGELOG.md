@@ -50,5 +50,5 @@ First public release.
   `windows`, `bake`, `approval`, `plan`, `run`, …) are still accepted as aliases. State
   files written with them still load. See "Upgrading from the old names" in the README.
 
-[Unreleased]: https://github.com/VishnuT-Procore/clockwork/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/VishnuT-Procore/clockwork/releases/tag/v0.1.0
+[Unreleased]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/VishnuT-Procore/traintraintrain/releases/tag/v0.1.0

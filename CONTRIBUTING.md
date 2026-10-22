@@ -14,8 +14,8 @@ Thanks for your interest! Bug reports, docs fixes and features are all welcome.
 ## Development setup
 
 ```bash
-git clone https://github.com/VishnuT-Procore/clockwork
-cd clockwork
+git clone https://github.com/VishnuT-Procore/traintraintrain
+cd traintraintrain
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 python -m pytest
