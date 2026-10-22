@@ -93,7 +93,13 @@ def test_ui_healthz_and_sigterm_brakes_dispatched_trains(tmp_path, monkeypatch):
     base = f"http://127.0.0.1:{port}"
     try:
         # /healthz needs no token; the API does.
-        health = wait_until(lambda: _get(base + "/healthz"))
+        try:
+            health = wait_until(lambda: _get(base + "/healthz") or ui.poll() is not None)
+        except AssertionError:
+            health = None
+        if health is not True and health != {"ok": True} or ui.poll() is not None:
+            ui.kill()
+            raise AssertionError(f"UI did not come up (exit {ui.poll()}):\n{ui.communicate()[0]}")
         assert health == {"ok": True}
         req = urllib.request.Request(
             base + "/api/departures/depart", data=json.dumps({"version": "v9"}).encode(),
