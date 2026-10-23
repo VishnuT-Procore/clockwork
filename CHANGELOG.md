@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
+### Added
+- **Postgres storage.** Set `TRAINTRAINTRAIN_DATABASE_URL` to keep departures, logs, the
+  audit trail and brake/signal requests in Postgres instead of files. Install it with
+  `pip install "traintraintrain[postgres]"`; the Docker image includes it. Files remain
+  the default.
+  - Ownership uses a Postgres advisory lock, which is released the moment the driving
+    process dies. A train interrupted by a crash or a container restart can then be
+    resumed without `--force`.
+  - New commands: `db migrate` (create tables), `db status` (which storage is in use and
+    what it holds), and `db import` (copy existing file-based state into Postgres).
+  - New `docker-compose.postgres.yml` example, and a database URL in the Kubernetes
+    Secret example.
+
+### Changed
+- CI also runs the full test suite against a real Postgres 16, and the Docker workflow
+  smoke-tests the image with Postgres.
+
 ## [0.1.1] - 2026-10-23
 
 ### Changed
@@ -67,6 +86,7 @@ during development; that command name and its `DEPLOYTRAIN_*` variables still wo
   `windows`, `bake`, `approval`, `plan`, `run`, …) are still accepted as aliases. State
   files written with them still load. See "Upgrading from the old names" in the README.
 
-[Unreleased]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VishnuT-Procore/traintraintrain/releases/tag/v0.1.0

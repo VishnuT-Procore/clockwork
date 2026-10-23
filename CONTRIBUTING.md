@@ -30,6 +30,18 @@ docker build -t traintraintrain:dev .
 docker run --rm -v "$PWD/examples:/config:ro" traintraintrain:dev timetable
 ```
 
+To run the Postgres tests, point `TEST_DATABASE_URL` at a database they may use. Each test
+creates and drops its own schema:
+
+```bash
+pip install -e ".[dev,postgres]"
+docker run -d --name tt-pg -e POSTGRES_PASSWORD=dev -p 5432:5432 postgres:16
+TEST_DATABASE_URL=postgresql://postgres:dev@127.0.0.1:5432/postgres python -m pytest
+```
+
+Without `TEST_DATABASE_URL` those tests are skipped. CI always runs them against a
+Postgres 16 service container.
+
 `.github/workflows/docker.yml` builds the image and smoke-tests it on every push and PR.
 It covers the CLI, a one-off train on a volume, and the UI's health check and graceful
 shutdown.
@@ -44,6 +56,7 @@ shutdown.
 | `traintraintrain/notify.py` | Slack notifications |
 | `traintraintrain/web.py`, `traintraintrain/ui/index.html` | Web UI: JSON API plus a single-page dashboard with no build step |
 | `traintraintrain/cli.py` | Command-line interface |
+| `traintraintrain/storage.py` | Where state lives: files (default) or Postgres, behind one interface |
 | `traintraintrain/healthcheck.py` | Container `HEALTHCHECK` (probes the UI's `/healthz`) |
 | `traintraintrain/_compat.py` | Pre-rename names (waves, regions, windows, …) still accepted as aliases |
 

@@ -3,7 +3,7 @@
 #   docker build -f examples/docker/Dockerfile.tools -t my-traintraintrain .
 #
 # Pin tool versions and verify checksums for production use.
-ARG TRAINTRAINTRAIN_IMAGE=ghcr.io/vishnut-procore/traintraintrain:0.1.1
+ARG TRAINTRAINTRAIN_IMAGE=ghcr.io/vishnut-procore/traintraintrain:0.2.0
 FROM ${TRAINTRAINTRAIN_IMAGE}
 
 USER root

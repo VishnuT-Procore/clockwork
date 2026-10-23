@@ -62,6 +62,8 @@ class TrainConfig:
     stops: list[Stop]
     state_dir: Path
     slack: SlackSettings | None = None
+    # Set from TRAINTRAINTRAIN_DATABASE_URL; when present, state lives in Postgres.
+    database_url: str | None = None
 
     @property
     def platforms(self) -> list[Platform]:
@@ -176,4 +178,5 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         state_dir=Path(env("STATE_DIR") or base_dir / t.get("state_dir", _default_state_dir(base_dir)))
         .resolve(),
         slack=slack,
+        database_url=env("DATABASE_URL"),
     )

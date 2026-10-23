@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from ._compat import LEGACY_STATUS
 from .config import Platform, Stop, TrainConfig
 from .notify import Notifier, build_notifier
+from .storage import BRAKE, SIGNAL, Backend, backend_for
 from .timetable import NoServiceError, format_duration
 
 log = logging.getLogger("traintraintrain")
@@ -124,25 +125,23 @@ def read_state(path: Path) -> dict | None:
 
 
 class StateStore:
-    """JSON state file per (train, version); lets an interrupted train resume."""
+    """The state document of one (train, version); lets an interrupted train resume."""
 
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, backend: Backend, train: str, version: str):
+        self.backend, self.train, self.version = backend, train, version
         self.lock = threading.RLock()
         self.data: dict = {}
 
     def load(self) -> bool:
-        if self.path.exists():
-            self.data = migrate_state(json.loads(self.path.read_text()))
-            return True
-        return False
+        data = self.backend.load(self.train, self.version)
+        if data is None:
+            return False
+        self.data = migrate_state(data)
+        return True
 
     def save(self) -> None:
         with self.lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, indent=2))
-            tmp.replace(self.path)
+            self.backend.save(self.train, self.version, self.data)
 
     def platform(self, name: str) -> dict:
         return self.data["platforms"][name]
@@ -176,18 +175,18 @@ def signal_path(cfg: TrainConfig, version: str, stop: str) -> Path:
     return state_path(cfg, version).with_suffix(f".signal.{_safe(stop)}")
 
 
-def apply_brake(cfg: TrainConfig, version: str, by: str) -> Path:
-    path = brake_path(cfg, version)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"by": by, "at": _iso(datetime.now(timezone.utc))}))
-    return path
+def apply_brake(cfg: TrainConfig, version: str, by: str) -> None:
+    backend_for(cfg).request(cfg.name, version, BRAKE, "", by)
 
 
-def clear_signal(cfg: TrainConfig, version: str, stop: str, by: str) -> Path:
-    path = signal_path(cfg, version, stop)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"by": by, "at": _iso(datetime.now(timezone.utc))}))
-    return path
+def clear_signal(cfg: TrainConfig, version: str, stop: str, by: str) -> None:
+    backend_for(cfg).request(cfg.name, version, SIGNAL, stop, by)
+
+
+def load_departure(cfg: TrainConfig, version: str) -> dict | None:
+    """A departure's state (migrated to the current format), from whichever backend is in use."""
+    data = backend_for(cfg).load(cfg.name, version)
+    return migrate_state(data) if data is not None else None
 
 
 def pid_alive(pid: int | None) -> bool:
@@ -230,15 +229,16 @@ def owner_alive(data: dict, now: datetime | None = None) -> bool:
 class Train:
     def __init__(self, cfg: TrainConfig, version: str, previous_version: str | None = None,
                  runner: Runner = shell_runner, clock: Clock | None = None,
-                 dry_run: bool = False, notifier: Notifier | None = None):
+                 dry_run: bool = False, notifier: Notifier | None = None,
+                 backend: Backend | None = None):
         self.cfg = cfg
         self.version = version
         self.previous_version = previous_version
         self.runner = runner
         self.clock = clock or Clock()
         self.dry_run = dry_run
-        self.state = StateStore(state_path(cfg, version))
-        self.brake_file = brake_path(cfg, version)
+        self.backend = backend or backend_for(cfg)
+        self.state = StateStore(self.backend, cfg.name, version)
         self._halt = threading.Event()
         if notifier is None:
             notifier = Notifier() if dry_run else build_notifier(cfg.slack)
@@ -260,7 +260,9 @@ class Train:
             st = self.state.data
             if st["status"] == SUCCEEDED:
                 return
-            if not force and st.get("pid") != os.getpid() and owner_alive(st):
+            # Postgres ownership is the advisory lock taken in run(); files use PID + heartbeat.
+            if (self.backend.kind == "files" and not force
+                    and st.get("pid") != os.getpid() and owner_alive(st)):
                 raise RuntimeError(
                     f"train {self.version} is already en route (pid {st['pid']} on {st.get('host')}); "
                     "use --force only if that process is really gone")
@@ -312,7 +314,7 @@ class Train:
     # ---- helpers -----------------------------------------------------------
 
     def _check_brake(self) -> None:
-        if self.brake_file.exists():
+        if self.backend.get_request(self.cfg.name, self.version, BRAKE) is not None:
             raise BrakeApplied()
 
     def _sleep(self, seconds: float, stop_on_halt: bool = False) -> None:
@@ -472,19 +474,15 @@ class Train:
         info = self.state.data["stops"].setdefault(stop.name, {"finished_at": None})
         if (info.get("signal") or {}).get("status") == SIGNAL_CLEARED:
             return
-        path = signal_path(self.cfg, self.version, stop.name)
         info["signal"] = {"status": SIGNAL_WAITING, "requested_at": _iso(self.clock.now())}
         self.state.data["status"] = AT_SIGNAL
         self.state.event(self.clock.now(),
                          f"signal at stop {stop.name!r} is red; waiting for someone to clear it")
         self._notify("stop_at_signal", stop=stop.name, platforms=[p.name for p in todo])
-        while not path.exists():
+        while (req := self.backend.get_request(self.cfg.name, self.version, SIGNAL, stop.name)) is None:
             self._sleep(SIGNAL_POLL_SECONDS)
-        try:
-            by = json.loads(path.read_text()).get("by") or "unknown"
-        except ValueError:
-            by = "unknown"
-        path.unlink(missing_ok=True)
+        by = req.get("by") or "unknown"
+        self.backend.delete_request(self.cfg.name, self.version, SIGNAL, stop.name)
         info["signal"] = {**info["signal"], "status": SIGNAL_CLEARED, "cleared_by": by,
                           "cleared_at": _iso(self.clock.now())}
         self.state.data["status"] = EN_ROUTE
@@ -513,16 +511,21 @@ class Train:
         return stop
 
     def run(self, retry_failed: bool = False, force: bool = False) -> str:
-        self.brake_file.unlink(missing_ok=True)
-        self._init_state(retry_failed, force)
-        if self.state.data["status"] == SUCCEEDED:
-            log.info("train already arrived for %s", self.version)
-            return SUCCEEDED
-        heartbeat = self._start_heartbeat()
+        if not self.backend.acquire(self.cfg.name, self.version):
+            raise RuntimeError(f"train {self.version} is already en route (another process is driving it)")
         try:
-            return self._journey()
+            self.backend.delete_request(self.cfg.name, self.version, BRAKE)
+            self._init_state(retry_failed, force)
+            if self.state.data["status"] == SUCCEEDED:
+                log.info("train already arrived for %s", self.version)
+                return SUCCEEDED
+            heartbeat = self._start_heartbeat()
+            try:
+                return self._journey()
+            finally:
+                heartbeat.set()
         finally:
-            heartbeat.set()
+            self.backend.release(self.cfg.name, self.version)
 
     def _journey(self) -> str:
         served: list[Platform] = []

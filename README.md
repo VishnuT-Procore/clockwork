@@ -203,6 +203,41 @@ and never stops a deploy.
 - `depart --no-notify` turns notifications off for one journey.
 - Notifications are always off in `--dry-run`.
 
+## Storage: files or Postgres
+
+By default, each train's state, its log, the audit trail and brake/signal requests are
+kept as files in `state_dir` (`.traintraintrain/` next to the config, or `/state` in the
+container). That needs nothing extra and suits a single machine or container.
+
+To keep everything in **Postgres** instead, install the driver and give it a connection URL:
+
+```bash
+pip install "traintraintrain[postgres]"     # the Docker image already includes it
+export TRAINTRAINTRAIN_DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/traintraintrain"
+traintraintrain -c train.yaml db migrate    # creates the tables (also done automatically)
+```
+
+Keep the URL in an environment variable or secret, not in `train.yaml`. Any libpq URL works,
+e.g. add `?sslmode=require` for TLS.
+
+| | Files | Postgres |
+|---|---|---|
+| Setup | none | a database and a URL |
+| Who is driving a train | PID + heartbeat in the state file | an advisory lock, released the moment that process dies |
+| UI and Jobs sharing state | need a shared volume | just share the URL |
+| Logs and audit trail | files in `state_dir` | `train_logs` and `train_audit` tables |
+| Querying history | read JSON files | SQL (`train_departures.data` is JSONB) |
+
+**Moving existing state into Postgres:**
+1. Set `TRAINTRAINTRAIN_DATABASE_URL`.
+2. Run `traintraintrain -c train.yaml db import`. Add `--from DIR` for another state folder,
+   or `--overwrite` to replace departures already in the database.
+3. Run `traintraintrain -c train.yaml db status` to see which storage is in use and how
+   much it holds.
+
+The tables are `train_departures`, `train_requests`, `train_audit`, `train_logs` and
+`train_schema`, created in the connection's default schema.
+
 ## Docker and Kubernetes
 
 Images are published to GitHub Container Registry for `linux/amd64` and `linux/arm64`:
@@ -211,11 +246,11 @@ Images are published to GitHub Container Registry for `linux/amd64` and `linux/a
 ```bash
 # Web UI, with config mounted read-only and state on a volume
 docker run -p 127.0.0.1:8080:8080 -e TRAINTRAINTRAIN_UI_TOKEN=change-me \
-  -v ./config:/config:ro -v traintraintrain-state:/state ghcr.io/vishnut-procore/traintraintrain:0.1.1
+  -v ./config:/config:ro -v traintraintrain-state:/state ghcr.io/vishnut-procore/traintraintrain:0.2.0
 
 # One train as a one-off job (exits 0 when it arrives, 1 if it fails or is braked)
 docker run -v ./config:/config:ro -v traintraintrain-state:/state \
-  ghcr.io/vishnut-procore/traintraintrain:0.1.1 depart --version v1.4.0 --previous-version v1.3.2
+  ghcr.io/vishnut-procore/traintraintrain:0.2.0 depart --version v1.4.0 --previous-version v1.3.2
 ```
 
 **Add your deploy tools to the image.** Your `deploy_command`, `inspection_command` and
@@ -244,6 +279,9 @@ kubectl, helm, aws, … installed;
 - [`examples/docker/docker-compose.yml`](examples/docker/docker-compose.yml): the UI
   with a persistent volume. Run it with
   `TRAINTRAINTRAIN_UI_TOKEN=change-me docker compose up --build`.
+- [`examples/docker/docker-compose.postgres.yml`](examples/docker/docker-compose.postgres.yml):
+  the UI with its state in a Postgres container. To use your own Postgres, drop that
+  service and set `TRAINTRAINTRAIN_DATABASE_URL`.
 - [`examples/kubernetes/ui.yaml`](examples/kubernetes/ui.yaml): the UI as a
   single-replica Deployment (`Recreate` strategy) with a PersistentVolumeClaim, probes,
   a non-root security context and a Service.

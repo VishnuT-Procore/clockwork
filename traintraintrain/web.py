@@ -27,9 +27,9 @@ from ._compat import LEGACY_HEADER_VALUE, env
 from .config import TrainConfig
 from .timetable import NoServiceError, format_duration
 from .train import (
-    ACTIVE_STATUSES, SIGNAL_WAITING, SUCCEEDED, apply_brake, brake_path, clear_signal,
-    owner_alive, project, read_state, signal_path, state_path,
+    ACTIVE_STATUSES, SIGNAL_WAITING, SUCCEEDED, apply_brake, clear_signal, migrate_state, project,
 )
+from .storage import BRAKE, SIGNAL, backend_for
 
 log = logging.getLogger("traintraintrain")
 
@@ -66,17 +66,6 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat(timespec="seconds") if dt else None
 
 
-def _tail(path: Path, lines: int) -> str:
-    if not path.exists():
-        return ""
-    with open(path, "rb") as fh:
-        fh.seek(0, os.SEEK_END)
-        size = fh.tell()
-        fh.seek(max(0, size - 256 * 1024))
-        data = fh.read().decode(errors="replace")
-    return "\n".join(data.splitlines()[-lines:])
-
-
 class App:
     def __init__(self, cfg: TrainConfig, config_path: str, token: str | None = None):
         self.cfg = cfg
@@ -84,38 +73,27 @@ class App:
         self.token = token
         self._children: list[tuple[subprocess.Popen, str]] = []
         self._lock = threading.Lock()
+        self.backend = backend_for(cfg)
+        log.info("state storage: %s", self.backend.describe())
 
-    # ---- paths -------------------------------------------------------------
+    # ---- storage -----------------------------------------------------------
 
     def _state(self, version: str) -> dict | None:
-        return read_state(state_path(self.cfg, version))
+        data = self.backend.load(self.cfg.name, version)
+        return migrate_state(data) if data is not None else None
 
-    def _log_path(self, version: str) -> Path:
-        return state_path(self.cfg, version).with_suffix(".log")
-
-    def _audit_path(self) -> Path:
-        return self.cfg.state_dir / f"{self.cfg.name}.audit.jsonl"
+    def _alive(self, st: dict) -> bool:
+        return self.backend.owner_alive(self.cfg.name, st["version"], st)
 
     def _audit(self, user: str, action: str, version: str, **details) -> None:
-        entry = {"at": _iso(_now()), "user": user, "action": action, "version": version, **details}
-        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
-        with self._lock, open(self._audit_path(), "a") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        entry = {"at": _iso(_now()), "train": self.cfg.name, "user": user, "action": action,
+                 "version": version, **details}
+        self.backend.audit(entry)
         log.info("audit: %s %s %s %s", user, action, version, details or "")
 
     def _audit_entries(self, version: str) -> list[dict]:
-        path = self._audit_path()
-        if not path.exists():
-            return []
-        out = []
-        for line in path.read_text().splitlines():
-            try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            if e.get("version") == version:
-                out.append(e)
-        return out
+        return [{k: v for k, v in e.items() if k != "train"}
+                for e in self.backend.audit_entries(self.cfg.name, version)]
 
     def _reap(self) -> None:
         with self._lock:
@@ -172,7 +150,7 @@ class App:
         counts: dict[str, int] = {}
         for p in st["platforms"].values():
             counts[p["status"]] = counts.get(p["status"], 0) + 1
-        alive = owner_alive(st)
+        alive = self._alive(st)
         return {
             "version": st["version"], "previous_version": st.get("previous_version"),
             "status": st["status"], "started_at": st.get("started_at"),
@@ -184,17 +162,15 @@ class App:
     def list_departures(self) -> list[dict]:
         self._reap()
         departures = []
-        for path in self.cfg.state_dir.glob(f"{self.cfg.name}-*.json"):
-            st = read_state(path)
-            if st and st.get("train") == self.cfg.name:
-                departures.append(self._summary(st))
+        for data in self.backend.list(self.cfg.name):
+            departures.append(self._summary(migrate_state(data)))
         departures.sort(key=lambda d: d["started_at"] or "", reverse=True)
         return departures
 
     def get_departure(self, version: str) -> dict:
         self._reap()
         st = self._state(self._check_version(version))
-        log_text = _tail(self._log_path(version), LOG_TAIL_LINES)
+        log_text = self.backend.read_log(self.cfg.name, version, LOG_TAIL_LINES)
         if st is None:
             if log_text:  # process started but hasn't written state yet, or died early
                 return {"version": version, "starting": True, "log": log_text,
@@ -202,7 +178,8 @@ class App:
             raise ApiError(HTTPStatus.NOT_FOUND, f"no departure for version {version}")
         at_signal = next((name for name, s in st.get("stops", {}).items()
                           if (s.get("signal") or {}).get("status") == SIGNAL_WAITING), None)
-        cleared = bool(at_signal) and signal_path(self.cfg, version, at_signal).exists()
+        cleared = bool(at_signal) and self.backend.get_request(
+            self.cfg.name, version, SIGNAL, at_signal) is not None
         return {
             **self._summary(st),
             "platforms": st["platforms"],
@@ -210,7 +187,7 @@ class App:
             "events": st.get("events", [])[-200:],
             "signal_at": at_signal,
             "signal_clear_submitted": cleared,
-            "brake_applied": brake_path(self.cfg, version).exists(),
+            "brake_applied": self.backend.get_request(self.cfg.name, version, BRAKE) is not None,
             "log": log_text,
             "actions": self._audit_entries(version),
         }
@@ -220,15 +197,20 @@ class App:
     def _spawn(self, version: str, extra: list[str], user: str) -> None:
         cmd = [sys.executable, "-m", "traintraintrain", "-c", self.config_path, "depart",
                "--version", version, *extra]
-        log_path = self._log_path(version)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a") as fh:
-            fh.write(f"\n=== {_iso(_now())} dispatched by {user}: {' '.join(cmd[2:])} ===\n")
-            fh.flush()
-            proc = subprocess.Popen(
-                cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                cwd=str(Path(self.config_path).parent), start_new_session=True,
-                env={**os.environ, "TRAINTRAINTRAIN_TRIGGERED_BY": user})
+        header = f"=== {_iso(_now())} dispatched by {user}: {' '.join(cmd[2:])} ==="
+        kwargs = dict(stdin=subprocess.DEVNULL, cwd=str(Path(self.config_path).parent),
+                      start_new_session=True, env={**os.environ, "TRAINTRAINTRAIN_TRIGGERED_BY": user})
+        log_path = self.backend.log_path(self.cfg.name, version)
+        if log_path is None:
+            # Postgres: the departure writes its own log lines to the database.
+            self.backend.append_log(self.cfg.name, version, header)
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+        else:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a") as fh:
+                fh.write(f"\n{header}\n")
+                fh.flush()
+                proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, **kwargs)
         with self._lock:
             self._children.append((proc, version))
 
@@ -254,7 +236,7 @@ class App:
         prev = body.get("previous_version") or None
         if prev is not None:
             self._check_version(prev)
-        if state_path(self.cfg, version).exists():
+        if self.backend.exists(self.cfg.name, version):
             raise ApiError(HTTPStatus.CONFLICT,
                            f"a departure for {version} already exists; open it and use resume")
         extra = ["--previous-version", prev] if prev else []
@@ -270,7 +252,7 @@ class App:
         st = self._state(version)
         if st is None:
             raise ApiError(HTTPStatus.NOT_FOUND, f"no departure for version {version}")
-        if owner_alive(st):
+        if self._alive(st):
             raise ApiError(HTTPStatus.CONFLICT, f"{version} is already en route")
         if st["status"] == SUCCEEDED:
             raise ApiError(HTTPStatus.CONFLICT, f"{version} has already arrived")
@@ -284,7 +266,7 @@ class App:
     def brake(self, body: dict, user: str) -> dict:
         version = self._check_version(body.get("version"))
         st = self._state(version)
-        if st is None or not owner_alive(st):
+        if st is None or not self._alive(st):
             raise ApiError(HTTPStatus.CONFLICT, f"{version} is not en route")
         apply_brake(self.cfg, version, user)
         self._audit(user, "brake", version)

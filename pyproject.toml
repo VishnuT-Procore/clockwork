@@ -1,6 +1,6 @@
 [project]
 name = "traintraintrain"
-version = "0.1.1"
+version = "0.2.0"
 description = "A deployment train for production: roll releases out stop by stop, within each platform's timetable"
 readme = "README.md"
 license = "Apache-2.0"
@@ -32,6 +32,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+postgres = ["psycopg[binary]>=3.1"]
 
 [project.urls]
 Homepage = "https://github.com/VishnuT-Procore/traintraintrain"

@@ -89,6 +89,30 @@ jobs:
             | tee /tmp/board2.txt
           grep -q "status ABORTED" /tmp/board2.txt   # braked cleanly on shutdown; resumable
 
+      - name: "Smoke test: Postgres storage"
+        run: |
+          set -eux
+          docker network create tt
+          docker run -d --name pg --network tt -e POSTGRES_PASSWORD=ci postgres:16
+          for i in $(seq 1 30); do docker exec pg pg_isready -U postgres && break; sleep 1; done
+          sed -i 's/default_dwell: 120s/default_dwell: 1s/' /tmp/cfg/train.yaml
+          DB=postgresql://postgres:ci@pg:5432/postgres
+          docker run --rm --network tt -v /tmp/cfg:/config:ro -e TRAINTRAINTRAIN_DATABASE_URL=$DB traintraintrain:test db migrate
+          docker run -d --name uipg --network tt -p 127.0.0.1:8081:8080 -e TRAINTRAINTRAIN_UI_TOKEN=ci \
+            -e TRAINTRAINTRAIN_DATABASE_URL=$DB -v /tmp/cfg:/config:ro traintraintrain:test
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8081/healthz && break; sleep 1; done
+          curl -fsS -H "Authorization: Bearer ci" -H "X-Requested-With: traintraintrain" \
+            -H "Content-Type: application/json" -d '{"version": "pg1"}' http://127.0.0.1:8081/api/departures/depart
+          for i in $(seq 1 60); do
+            curl -fsS -H "Authorization: Bearer ci" "http://127.0.0.1:8081/api/departure?version=pg1" \
+              | grep -q '"status": "succeeded"' && break; sleep 1; done
+          curl -fsS -H "Authorization: Bearer ci" "http://127.0.0.1:8081/api/departure?version=pg1" | grep -q '"status": "succeeded"'
+          docker run --rm --network tt -v /tmp/cfg:/config:ro -e TRAINTRAINTRAIN_DATABASE_URL=$DB traintraintrain:test db status \
+            | tee /tmp/dbstatus.txt
+          grep -q "departures: 1" /tmp/dbstatus.txt
+          docker exec pg psql -U postgres -Atc "select status from train_departures where version='pg1'" | grep -qx succeeded
+          docker stop uipg
+
       - name: Image tags
         id: meta
         uses: docker/metadata-action@v6

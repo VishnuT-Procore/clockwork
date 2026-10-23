@@ -1,0 +1,47 @@
+# traintraintrain web UI with its state in Postgres.
+#
+#   cd examples/docker
+#   export TRAINTRAINTRAIN_UI_TOKEN=change-me POSTGRES_PASSWORD=change-me-too
+#   docker compose -f docker-compose.postgres.yml up --build
+#   open http://127.0.0.1:8080  (enter the token when asked)
+#
+# Already have a Postgres? Drop the `postgres` service and point TRAINTRAINTRAIN_DATABASE_URL
+# at it: postgresql://USER:PASSWORD@HOST:5432/DATABASE  (add ?sslmode=require for TLS).
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: traintraintrain
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: traintraintrain
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traintraintrain -d traintraintrain"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  traintraintrain:
+    build:
+      context: ../..
+    # Or use a published image:
+    # image: ghcr.io/vishnut-procore/traintraintrain:0.2.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"     # localhost only; put an SSO proxy in front for shared use
+    environment:
+      TRAINTRAINTRAIN_DATABASE_URL: postgresql://traintraintrain:${POSTGRES_PASSWORD}@postgres:5432/traintraintrain
+      TRAINTRAINTRAIN_UI_TOKEN: ${TRAINTRAINTRAIN_UI_TOKEN:?set TRAINTRAINTRAIN_UI_TOKEN}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      TRAINTRAINTRAIN_SHUTDOWN_GRACE: "25"
+    volumes:
+      - ..:/config:ro             # train.yaml + scripts/
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

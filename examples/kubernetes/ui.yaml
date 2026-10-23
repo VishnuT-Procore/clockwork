@@ -12,6 +12,8 @@ metadata:
   name: traintraintrain
 stringData:
   TRAINTRAINTRAIN_UI_TOKEN: change-me
+  # Keep state in Postgres instead of the PersistentVolumeClaim below (e.g. RDS, Cloud SQL):
+  # TRAINTRAINTRAIN_DATABASE_URL: postgresql://USER:PASSWORD@HOST:5432/traintraintrain?sslmode=require
   # SLACK_BOT_TOKEN: xoxb-...
 ---
 apiVersion: v1
@@ -72,7 +74,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: traintraintrain
-          image: ghcr.io/vishnut-procore/traintraintrain:0.1.1   # or your image with tools
+          image: ghcr.io/vishnut-procore/traintraintrain:0.2.0   # or your image with tools
           args: ["ui"]
           ports:
             - {name: http, containerPort: 8080}

@@ -11,6 +11,7 @@ import logging
 import signal
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -18,8 +19,9 @@ from . import config as config_mod
 from ._compat import env
 from .notify import Notifier, SlackNotifier, build_notifier
 from .timetable import format_duration, parse_duration
+from .storage import DatabaseLogHandler, FileBackend, PostgresBackend, StorageError, backend_for
 from .train import (
-    SUCCEEDED, Train, apply_brake, clear_signal, project, read_state, state_path,
+    SUCCEEDED, Train, apply_brake, clear_signal, load_departure, project,
 )
 
 
@@ -78,6 +80,9 @@ def cmd_service(args, cfg) -> int:
 def cmd_depart(args, cfg) -> int:
     notifier = Notifier() if args.no_notify else None
     train = Train(cfg, args.version, args.previous_version, dry_run=args.dry_run, notifier=notifier)
+    logger = logging.getLogger("traintraintrain")
+    if train.backend.kind == "postgres":  # the web UI's Log tab reads these from the database
+        logger.addHandler(DatabaseLogHandler(train.backend, cfg.name, args.version))
 
     def on_sigterm(signum, frame):
         # e.g. `docker stop` or a Kubernetes pod shutting down: stop at the next checkpoint
@@ -86,16 +91,20 @@ def cmd_depart(args, cfg) -> int:
         apply_brake(cfg, args.version, "SIGTERM")
 
     signal.signal(signal.SIGTERM, on_sigterm)
-    status = train.run(retry_failed=args.retry_failed, force=args.force)
+    try:
+        status = train.run(retry_failed=args.retry_failed, force=args.force)
+    except Exception:
+        logger.exception("the departure stopped with an error")
+        raise
     print(f"\ntrain status: {_label(status)}")
     return 0 if status == SUCCEEDED else 1
 
 
 def cmd_board(args, cfg) -> int:
-    path = state_path(cfg, args.version)
-    st = read_state(path)
+    st = load_departure(cfg, args.version)
     if st is None:
-        print(f"no departure for {cfg.name} {args.version} ({path})", file=sys.stderr)
+        print(f"no departure for {cfg.name} {args.version} ({backend_for(cfg).describe()})",
+              file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(st, indent=2))
@@ -127,6 +136,54 @@ def cmd_clear_signal(args, cfg) -> int:
         return 1
     clear_signal(cfg, args.version, args.stop, args.by or getpass.getuser())
     print(f"signal cleared at stop {args.stop!r} for {cfg.name} {args.version}")
+    return 0
+
+
+def _postgres(cfg) -> PostgresBackend:
+    backend = backend_for(cfg)
+    if not isinstance(backend, PostgresBackend):
+        raise RuntimeError("set TRAINTRAINTRAIN_DATABASE_URL to a postgresql:// URL first")
+    return backend
+
+
+def cmd_db_migrate(args, cfg) -> int:
+    backend = _postgres(cfg)
+    backend.migrate()
+    print(f"database ready: {backend.describe()}")
+    return 0
+
+
+def cmd_db_status(args, cfg) -> int:
+    backend = backend_for(cfg)
+    print(f"storage: {backend.describe()}")
+    if isinstance(backend, PostgresBackend):
+        for k, v in backend.counts().items():
+            print(f"  {k}: {v}")
+    else:
+        print(f"  departures for {cfg.name}: {len(backend.list(cfg.name))}")
+    return 0
+
+
+def cmd_db_import(args, cfg) -> int:
+    """Copy file-based state (departures, audit trail, logs) into Postgres."""
+    backend = _postgres(cfg)
+    src = FileBackend(Path(args.source).resolve() if args.source else cfg.state_dir)
+    copied = skipped = 0
+    for data in src.list(cfg.name):
+        version = data["version"]
+        if backend.exists(cfg.name, version) and not args.overwrite:
+            skipped += 1
+            continue
+        backend.save(cfg.name, version, data)
+        backend.delete_request(cfg.name, version, "brake")
+        log_text = src.read_log(cfg.name, version, lines=10**9)
+        if log_text:
+            backend.append_log_lines(cfg.name, version, log_text.split("\n"))
+        for entry in src.audit_entries(cfg.name, version):
+            backend.audit({**entry, "train": cfg.name})
+        copied += 1
+    print(f"imported {copied} departure(s) from {src.state_dir} into {backend.describe()}"
+          + (f"; skipped {skipped} already there (use --overwrite to replace)" if skipped else ""))
     return 0
 
 
@@ -217,6 +274,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="listen port (default: $TRAINTRAINTRAIN_UI_PORT or 8080)")
     sp.set_defaults(func=cmd_ui)
 
+    db = sub.add_parser("db", help="Postgres storage: migrate, status, import")
+    dbs = db.add_subparsers(dest="db_cmd", required=True, metavar="ACTION")
+    sp = dbs.add_parser("migrate", help="create or update the database tables")
+    sp.set_defaults(func=cmd_db_migrate)
+    sp = dbs.add_parser("status", help="show which storage is in use and what it holds")
+    sp.set_defaults(func=cmd_db_status)
+    sp = dbs.add_parser("import", help="copy file-based state into Postgres")
+    sp.add_argument("--from", dest="source", help="state folder to import (default: the config's)")
+    sp.add_argument("--overwrite", action="store_true", help="replace departures already in the database")
+    sp.set_defaults(func=cmd_db_import)
+
     sp = sub.add_parser("notify-test", help="send a test Slack message")
     sp.set_defaults(func=cmd_notify_test)
 
@@ -230,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args, cfg)
-    except (RuntimeError, OSError) as e:
+    except (RuntimeError, OSError, StorageError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 

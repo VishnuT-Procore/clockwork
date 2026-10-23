@@ -32,7 +32,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 COPY --from=build /wheels /wheels
 # tzdata: slim images may lack system timezone files; timetables need them.
-RUN pip install --no-cache-dir /wheels/*.whl tzdata \
+RUN pip install --no-cache-dir "$(ls /wheels/*.whl)[postgres]" tzdata \
  && rm -rf /wheels \
  && useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin traintraintrain \
  && mkdir -p /config /state \

@@ -175,3 +175,12 @@ def test_deploytrain_command_alias_is_installed():
                if ep.value.startswith("traintraintrain.")}
     assert scripts == {"traintraintrain": "traintraintrain.cli:main",
                        "deploytrain": "traintraintrain.cli:main"}
+
+
+def test_database_url_without_driver_gives_install_hint(tmp_path, monkeypatch, capsys):
+    import importlib.util
+    if importlib.util.find_spec("psycopg") is not None:
+        pytest.skip("the Postgres driver is installed here")
+    monkeypatch.setenv("TRAINTRAINTRAIN_DATABASE_URL", "postgresql://u@127.0.0.1:5432/db")
+    assert cli.main(["-c", str(write_config(tmp_path)), "db", "status"]) == 1
+    assert 'pip install "traintraintrain[postgres]"' in capsys.readouterr().err
