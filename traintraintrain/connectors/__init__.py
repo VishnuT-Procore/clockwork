@@ -13,7 +13,7 @@ Declared once in train.yaml, used by steps:
 
 A connector turns one step into a call and the result into metrics; the step's `expect`
 rules then decide whether it passed. Built-in types: http, postgres, prometheus,
-databricks, driver and command. More types can be added by installing a package that registers a
+databricks, jira, driver and command. More types can be added by installing a package that registers a
 `traintraintrain.connectors` entry point (see docs/connectors.md).
 """
 from __future__ import annotations
@@ -60,12 +60,14 @@ class Context:
     dry_run: bool = False
     steps: dict = field(default_factory=dict)   # earlier steps' metrics, by step name
     runner: object = None                       # runs shell commands (the train's runner)
+    status: str = ""                            # in `after` steps: how the departure ended
 
     def values(self) -> dict[str, str]:
         """Placeholder values: {platform}, {version}, ..., each platform var, {vars.x}, {steps.s.m}."""
         out = {"train": self.train, "platform": self.platform, "stop": self.stop, "version": self.version,
                "sha": self.sha or "", "previous_version": self.previous_version or "",
-               "previous_sha": self.previous_sha or "", "departure": self.departure or ""}
+               "previous_sha": self.previous_sha or "", "departure": self.departure or "",
+               "status": self.status or ""}
         for k, v in self.vars.items():
             out.setdefault(k, str(v))
             out[f"vars.{k}"] = str(v)
@@ -190,10 +192,12 @@ def types() -> dict[str, type[Connector]]:
         from .databricks import DatabricksConnector
         from .driver import DriverConnector
         from .http import HttpConnector
+        from .jira import JiraConnector
         from .postgres import PostgresConnector
         from .prometheus import PrometheusConnector
         _registry = {c.type_name: c for c in (HttpConnector, PostgresConnector, PrometheusConnector,
-                                              DatabricksConnector, DriverConnector, CommandConnector)}
+                                              DatabricksConnector, JiraConnector, DriverConnector,
+                                              CommandConnector)}
         _registry.update(_plugins())
     return _registry
 

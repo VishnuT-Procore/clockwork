@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Jira Service Management connector** (`type: jira`, Cloud or Data Center): `search`
+  (JQL count, e.g. no open P1 incidents), `issue`, `approval`, `create` (a service desk
+  request or a Jira issue), `transition` and `comment`.
+- **Steps once per departure:** `train.before` runs before the first stop (a failure
+  stops the departure; passed steps aren't repeated on resume), and `train.after` runs when
+  it ends, with `{status}`. Their metrics are available to platform steps and to commands
+  as `{steps.<name>.<metric>}`; `deploy_command` and the other commands now fill those
+  in too. The UI shows them as "Departure steps".
 - An example and a guide for checking Databricks before deploying: workspace
   connectivity, a job's last run, and SQL warehouse state (`examples/databricks`, and
   "Checking Databricks status" in docs/connectors.md).

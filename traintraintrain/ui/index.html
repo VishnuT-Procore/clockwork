@@ -680,11 +680,23 @@ const STEP_LOOK = { passed: ["good", "check"], failed: ["bad", "x"], warned: ["w
   pending: ["neutral", "circle"], skipped: ["neutral", "circle"], stopped: ["bad", "stop"] };
 function stepsRow(p) {
   if (!p.steps || !p.steps.length) return "";
-  const rows = p.steps.map((s) => {
+  return `<tr class="detail"><td colspan="6">${stepsList(p.steps)}</td></tr>`;
+}
+// train.before / train.after: steps that run once per departure (change tickets, gates, notes).
+function renderDepartureSteps(dep) {
+  const ds = dep.departure_steps || {};
+  const part = (title, steps) => steps && steps.length
+    ? `<div class="card" style="margin-bottom:12px"><div class="changes-head">${icon("list", 16)}<span class="grow">${title}</span></div>
+       <div style="padding:8px 16px">${stepsList(steps)}</div></div>` : "";
+  const html = part("Before departing", ds.before) + part("After the journey", ds.after);
+  return html ? `<div class="section-title">Departure steps</div>${html}` : "";
+}
+function stepsList(steps) {
+  const rows = steps.map((s) => {
     const [tone, ico] = STEP_LOOK[s.status] || ["neutral", "circle"];
     const checks = s.checks || [];
     const byMetric = Object.fromEntries(checks.map((c) => [c.metric, c]));
-    const chips = Object.entries(s.metrics || {}).filter(([k]) => k !== "status" || byMetric.status).map(([k, v]) => {
+    const chips = Object.entries(s.metrics || {}).filter(([k, v]) => k !== "status" || typeof v !== "number" || byMetric.status).map(([k, v]) => {
       const c = byMetric[k];
       const cls = c ? (c.ok ? " ok" : " no") : "";
       return `<span class="mchip${cls}" title="${esc(c ? c.rule : k)}">${esc(k)} ${esc(String(v))}${
@@ -703,7 +715,7 @@ function stepsRow(p) {
       <span class="sname">${esc(s.name)}</span>
       <span class="sdetail">${chips}${pendingRules}${missing}${why}${meta ? `<span class="muted">${meta}</span>` : ""}</span></div>`;
   }).join("");
-  return `<tr class="detail"><td colspan="6"><div class="psteps">${rows}</div></td></tr>`;
+  return `<div class="psteps">${rows}</div>`;
 }
 
 function classify(msg) {
@@ -906,6 +918,7 @@ function renderDeparture() {
         ${dep.changes && dep.changes.url ? `<a class="link" href="${esc(dep.changes.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)}What's in this release</a>` : ""}</div>
     </div>
     ${callout}${tiles}
+    ${renderDepartureSteps(dep)}
     ${dep.platforms ? `<div class="section-title">Route</div>${renderRoute(dep)}${renderStops(dep)}` : ""}
     <div class="tabs" role="tablist">
       <button type="button" class="tab" role="tab" data-tab="events" aria-selected="${t === "events"}">Activity<span class="count">${nEvents}</span></button>

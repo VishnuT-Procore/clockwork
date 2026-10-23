@@ -292,11 +292,14 @@ STEP_MARK = {"passed": "ok", "failed": "FAILED", "warned": "warned", "running": 
 
 
 def _print_steps(st: dict) -> None:
-    for name, p in st["platforms"].items():
-        if not p.get("steps"):
+    groups = [("before departing", (st.get("departure_steps") or {}).get("before"))]
+    groups += [(name, p.get("steps")) for name, p in st["platforms"].items()]
+    groups += [("after the journey", (st.get("departure_steps") or {}).get("after"))]
+    for name, steps in groups:
+        if not steps:
             continue
         print(f"\n  {name}")
-        for s in p["steps"]:
+        for s in steps:
             status = STEP_MARK.get(s.get("status"), s.get("status"))
             metrics = ", ".join(f"{k}={v}" for k, v in (s.get("metrics") or {}).items())
             print(f"    {status:<8} {s['name']:<20} {metrics}")
@@ -314,6 +317,9 @@ def _steps_using(cfg, connector: str):
         for s in p.steps:
             if s.connector == connector and not any(s is x for _, x in seen):
                 seen.append((p, s))
+    for s in [*cfg.before_steps, *cfg.after_steps]:
+        if s.connector == connector:
+            seen.append((cfg.platforms[0], s))
     if cfg.rollback_step is not None and cfg.rollback_step.connector == connector:
         seen.append((cfg.platforms[0], cfg.rollback_step))
     return seen

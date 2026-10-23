@@ -132,6 +132,23 @@ def parse_step(item, where: str, connectors: dict, base_dir: Path) -> Step:
                 timeout=_duration(item.get("timeout", "10m"), where, "timeout"), on_fail=on_fail)
 
 
+def parse_departure_steps(raw, where: str, connectors: dict, base_dir: Path) -> list[Step]:
+    """`train.before` / `train.after`: calls and waits that run once per departure."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise StepError(f"{where} must be a list of steps")
+    steps = [parse_step(item, f"{where} step {i + 1}", connectors, base_dir) for i, item in enumerate(raw)]
+    for s in steps:
+        if s.kind in BUILTINS:
+            raise StepError(f"{where}: {s.kind} runs per platform, so it can't be in {where}")
+    names = [s.name for s in steps]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise StepError(f"{where}: step names must be unique; repeated: {', '.join(dupes)}")
+    return steps
+
+
 def _connector_for(item: dict, where: str, connectors: dict, base_dir: Path):
     if "use" in item:
         name = item["use"]

@@ -1,0 +1,88 @@
+# A change-managed train: a service desk change request is raised and must be approved
+# before the first stop, each region checks for open incidents and comments on the
+# request, and the request is updated when the departure ends. See docs/connectors.md.
+#
+#   export JIRA_EMAIL=you@acme.com JIRA_API_TOKEN=...    # Jira Cloud
+#   traintraintrain -c examples/jira/train.yaml connectors test jira --step no-p1-incidents
+#
+# Replace the site URL, service desk/request type ids ("10", "25"), the INC project and
+# the transition names with yours.
+connectors:
+  jira:
+    type: jira
+    url: https://acme.atlassian.net
+    email: ${JIRA_EMAIL}
+    api_token: ${JIRA_API_TOKEN}
+
+train:
+  name: cde
+  deploy_command: "echo 'deploy {version} to {cluster} under {steps.change.key}'"
+  rollback_command: "echo 'rollback {cluster} to {previous_version}'"
+  inspection_command: "echo '{platform}: GET /healthz -> 200'"
+  default_dwell: 10m
+  inspection_interval: 1m
+
+  before:                                 # once per departure
+    - name: change                        # raise the change request
+      use: jira
+      action: create
+      service_desk: "10"
+      request_type: "25"
+      summary: "Deploy {train} {version}"
+      description: "Rolling {train} out from {previous_version} to {version}, stop by stop."
+    - name: approved                      # wait for the change advisory board
+      use: jira
+      action: approval
+      key: "{steps.change.key}"
+      expect: ["approval == 'approved'"]
+      until: 4h
+      every: 5m
+    - name: implementing
+      use: jira
+      action: transition
+      key: "{steps.change.key}"
+      to: Implementing
+      on_fail: warn
+
+  steps:                                  # every region
+    - name: no-p1-incidents
+      use: jira
+      action: search
+      jql: 'project = INC AND priority in (P1, Highest) AND statusCategory != Done AND labels = "{platform}"'
+      expect: ["count == 0"]
+      until: 30m                          # wait for an open incident to be resolved
+      every: 5m
+    - deploy
+    - dwell
+    - name: note
+      use: jira
+      action: comment
+      key: "{steps.change.key}"
+      body: "{platform} now runs {version}."
+      on_fail: warn
+
+  after:                                  # once, when the departure ends
+    - name: summary
+      use: jira
+      action: comment
+      key: "{steps.change.key}"
+      body: "Departure of {version} {status}."
+    - name: close
+      use: jira
+      action: transition
+      key: "{steps.change.key}"
+      to: Completed
+
+stops:
+  - name: canary
+    platforms:
+      - {name: us-west-2-canary, vars: {cluster: canary}}
+  - name: us
+    signal: true                          # a person clears it after looking at the canary
+    platforms:
+      - {name: us-east-1, vars: {cluster: use1}}
+  - name: worldwide
+    parallel_platforms: 2
+    platforms:
+      - {name: eu-west-1, vars: {cluster: euw1}}
+      - {name: ap-northeast-1, vars: {cluster: apne1}}

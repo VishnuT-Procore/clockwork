@@ -234,6 +234,7 @@ class App:
             "events": st.get("events", [])[-200:],
             "changes": st.get("changes"),
             "sha": st.get("sha"),
+            "departure_steps": st.get("departure_steps"),
             "signal_at": at_signal,
             "signal_clear_submitted": cleared,
             "brake_applied": self.backend.get_request(self.cfg.name, version, BRAKE) is not None,

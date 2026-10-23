@@ -95,6 +95,50 @@ as written. SQL takes them as bind parameters instead: `:platform`, `:version`,
 **Dry runs** list the steps without calling anything. **Resuming** a departure restarts
 a platform's pipeline from its first step, so make steps safe to repeat.
 
+## Steps once per departure: `before` and `after`
+
+Some things happen once per release, not once per region: raising a change ticket and
+waiting for its approval, posting an announcement, closing the ticket. Put them in
+`train.before` and `train.after`:
+
+```yaml
+train:
+  before:                   # once, before the first stop
+    - name: change
+      use: jira
+      action: create
+      service_desk: "10"
+      request_type: "25"
+      summary: "Deploy {train} {version}"
+    - name: approved
+      use: jira
+      action: approval
+      key: "{steps.change.key}"
+      expect: ["approval == 'approved'"]
+      until: 4h
+      every: 5m
+  after:                    # once, when the departure ends; {status} is succeeded, failed or aborted
+    - name: close
+      use: jira
+      action: comment
+      key: "{steps.change.key}"
+      body: "Deploy of {version} {status}."
+```
+
+- They take the same calls, `expect` rules, `until`/`hold`, `on_fail` and `wait` as
+  platform steps. `deploy` and `dwell` aren't allowed, since they run per platform.
+- **A failing `before` step** stops the departure before anything is deployed, and the
+  train shows it as failed.
+- **On resume,** `before` steps that already passed aren't run again, so no second
+  ticket is raised.
+- **`after` steps** run every time a departure ends, including after a failure or the
+  emergency brake. Their own failures are recorded but don't change the outcome.
+- **Their metrics are available everywhere afterwards** as `{steps.<name>.<metric>}`:
+  in platform steps, and in `deploy_command` and the other commands, e.g. to pass the
+  change ticket's key.
+- The UI shows them as **Departure steps** on the departure page; `board --steps` lists
+  them too.
+
 ## Connector types
 
 Settings may use `${VAR}` or `${VAR:-default}` to read environment variables. Use that
@@ -215,6 +259,51 @@ In Docker, pass the variables through in `docker-compose.yml`'s `environment:`
 | `HTTP 401` / `HTTP 403` | the token is wrong or expired, or lacks permission on the job or warehouse |
 | `the query didn't finish in time` | the warehouse was starting; raise the step's `timeout` (the example uses 5m) |
 | `no metric 'result_state'` | wrong job ID, or the job has no completed runs yet |
+
+### jira
+
+For Jira Service Management (service desk) and Jira: change requests, approvals,
+incident checks, comments and transitions.
+
+```yaml
+jira:
+  type: jira
+  url: https://acme.atlassian.net
+  email: ${JIRA_EMAIL}               # Jira Cloud: account email + API token
+  api_token: ${JIRA_API_TOKEN}       #   (id.atlassian.com → Security → API tokens)
+  # token: ${JIRA_PAT}               # Jira Data Center / Server: a personal access token
+```
+
+Each step sets an `action`:
+
+| `action` | Keys | Metrics | Changes things? |
+|---|---|---|---|
+| `search` | `jql`, `max_results` (default 10) | `count`, `keys` (comma-separated) | no |
+| `issue` | `key`, optional `fields: {name: field path}` | `key`, `status`, `status_category` (`new`/`indeterminate`/`done`), `resolution`, `assignee`, `priority`, plus your fields | no |
+| `approval` | `key` (a service desk request) | `approval` (`approved`, `declined`, `pending` or `none`), `approvals` | no |
+| `create` | `service_desk` + `request_type` (a service desk request), or `project` + `issue_type` (a Jira issue); `summary`, `description`, `fields` | `key`, `url`, `status` | yes |
+| `transition` | `key`, `to` (a transition or status name) | `key`, `status` | yes |
+| `comment` | `key`, `body` | `key`, `comment_id` | yes |
+
+Common uses:
+- **Gate on incidents:** `search` for open high-priority incidents, with
+  `expect: ["count == 0"]`, before each region deploys.
+- **Change management:** `create` a change request in `train.before`, then `approval`
+  with `until` to wait for the CAB.
+- **Audit trail:** a `comment` per region after it deploys, and a `transition` to close
+  the request in `train.after`.
+
+Notes:
+- Placeholders work in every key, e.g. `key: "{steps.change.key}"` or
+  `jql: '... AND labels = "{platform}"'`.
+- **Finding the IDs:** the service desk and request type IDs are in the portal URL
+  (`/servicedesk/customer/portal/<service_desk>/create/<request_type>`), or under
+  Project settings → Request types.
+- On Jira Cloud, `search` uses the current search API (`/rest/api/3/search/jql`) and
+  takes its count from `approximate-count`.
+
+See [`examples/jira/train.yaml`](../examples/jira/train.yaml) for a complete
+change-managed train.
 
 ### driver
 

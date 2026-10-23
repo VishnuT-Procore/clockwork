@@ -72,7 +72,9 @@ A fuller one is in [`examples/train.yaml`](https://github.com/VishnuT-Procore/tr
 - **What's in a release:** every change, before departing and after, plus what's on
   `main` but not yet in production.
 - **Steps, checks and connectors:** per-region pipelines that query Postgres,
-  Prometheus, Databricks or any HTTP API, with rules like `error_rate < 1`.
+  Prometheus, Databricks, Jira Service Management or any HTTP API, with rules like
+  `error_rate < 1`. Steps can also run once per departure, e.g. raising a change request
+  and waiting for its approval.
   [Connectors](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/connectors.md)
 - **Drivers:** one program of yours performs every step through a JSON contract.
   [Driver contract](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/driver-contract.md)

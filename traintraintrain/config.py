@@ -105,6 +105,9 @@ class TrainConfig:
     connectors: dict = field(default_factory=dict)
     # `train.rollback: {use: ...}`: a connector call replacing rollback_command.
     rollback_step: object = None
+    # `train.before` / `train.after`: steps run once per departure (change tickets, gates, notes).
+    before_steps: list = field(default_factory=list)
+    after_steps: list = field(default_factory=list)
 
     @property
     def platforms(self) -> list[Platform]:
@@ -206,6 +209,11 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
     if builtin_deploy and "deploy_command" not in t and not (driver and "deploy" in driver.actions):
         raise ConfigError("train.deploy_command is required (or a train.driver that handles deploy, "
                           "or a `deploy` step that uses a connector)")
+    try:
+        before_steps = steps_mod.parse_departure_steps(t.get("before"), "train.before", connectors, base_dir)
+        after_steps = steps_mod.parse_departure_steps(t.get("after"), "train.after", connectors, base_dir)
+    except steps_mod.StepError as e:
+        raise ConfigError(str(e)) from None
     rollback_step = None
     if t.get("rollback") is not None:
         if t.get("rollback_command"):
@@ -291,6 +299,8 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         driver=driver,
         connectors=connectors,
         rollback_step=rollback_step,
+        before_steps=before_steps,
+        after_steps=after_steps,
     )
 
 

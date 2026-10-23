@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -37,6 +38,7 @@ ACTIVE_STATUSES = (EN_ROUTE, AT_SIGNAL)
 SIGNAL_WAITING, SIGNAL_CLEARED = "waiting", "cleared"
 
 SIGNAL_POLL_SECONDS = 5.0
+_STEP_REF = re.compile(r"\{steps\.([A-Za-z0-9_\-]+)\.([A-Za-z0-9_.\-]+)\}")
 MAX_SLEEP_CHUNK = 5.0  # seconds; bounds how quickly the brake or a halt is noticed
 INSPECTION_TIMEOUT = timedelta(minutes=5)
 # The process driving a train refreshes `heartbeat_at` in its state file this often. A
@@ -244,6 +246,8 @@ class Train:
         self.backend = backend or backend_for(cfg)
         self.state = StateStore(self.backend, cfg.name, version)
         self._halt = threading.Event()
+        self._departure_metrics: dict[str, dict] = {}  # metrics of train.before steps, for every platform
+        self._platform_metrics: dict[str, dict] = {}   # each platform's step metrics so far
         if notifier is None:
             notifier = Notifier() if dry_run else build_notifier(cfg.slack)
         self.notifier = notifier
@@ -428,7 +432,7 @@ class Train:
         if not template and self.cfg.handles(action):
             return self._run_driver(kind, action, platform, timeout)
         variables = self._vars(platform)
-        command = template.format_map(variables)
+        command = self._with_step_values(template, platform).format_map(variables)
         env = {f"DT_{k.upper()}": v for k, v in variables.items()}
         if self.dry_run:
             self.state.event(self.clock.now(), f"[dry-run] {kind}: {command}", platform.name)
@@ -439,6 +443,18 @@ class Train:
             for line in result.output.strip().splitlines()[-20:]:
                 log.info("[%s]   | %s", platform.name, line)
         return result
+
+    def _with_step_values(self, template: str, platform: Platform) -> str:
+        """Fill {steps.<step>.<metric>} (from earlier steps, train.before included) in a command."""
+        metrics = self._platform_metrics.get(platform.name, self._departure_metrics)
+
+        def sub(m):
+            value = (metrics.get(m.group(1)) or {}).get(m.group(2))
+            if value is None:
+                log.warning("[%s] %s: no such step value yet; using an empty string", platform.name, m.group(0))
+                value = ""
+            return str(value).replace("{", "{{").replace("}", "}}")  # it goes through format_map next
+        return _STEP_REF.sub(sub, template)
 
     def _run_driver(self, kind: str, action: str, platform: Platform, timeout: timedelta) -> CommandResult:
         request = driver.build_request(
@@ -546,7 +562,8 @@ class Train:
             self.state.update_platform(name, status=DEPLOYING, started_at=_iso(self.clock.now()),
                                        message=f"deploying {self.version}", **pipeline)
             self._notify("platform_deploying", platform=name)
-            metrics: dict[str, dict] = {}   # each finished call step's metrics, for later steps
+            metrics = dict(self._departure_metrics)  # each finished call step's metrics, for later steps
+            self._platform_metrics[name] = metrics
             for i, step in enumerate(platform.steps):
                 self._run_step(platform, i, step, metrics)
             self.state.update_platform(name, status=SUCCEEDED, finished_at=_iso(self.clock.now()),
@@ -640,7 +657,20 @@ class Train:
                              f"connector {step.connector!r}", name)
             return "skipped"
         self.state.update_platform(name, status=DEPLOYING, message=f"running step {step.name}")
-        ctx = self._context(platform, metrics)
+        passed, reason, result = self._attempts(
+            step, self._context(platform, metrics), metrics, lambda **f: self._step_state(platform, i, **f),
+            name, lambda msg: self.state.update_platform(name, message=msg))
+        return "passed" if passed else self._step_failed(platform, i, step, reason, result)
+
+    def _attempts(self, step: Step, ctx: connectors.Context, metrics: dict, record, where: str | None,
+                  waiting) -> tuple[bool, str, connectors.StepResult]:
+        """Call a step's connector until it passes, fails, or its until/hold window ends.
+
+        Returns (passed, why not, last result). `record` stores the step's progress, `where`
+        is the platform its events belong to (None: the whole train), `waiting` shows a
+        status message while `until` retries.
+        """
+        connector = self.cfg.connectors[step.connector]
         started, attempts = self.clock.now(), 0
         while True:
             attempts += 1
@@ -651,29 +681,107 @@ class Train:
             reason = result.message if not result.ok else "; ".join(
                 f"{r.rule} ({r.why})" for r in results if not r.ok)
             metrics[step.name] = result.metrics
-            self._step_state(platform, i, metrics=result.metrics, checks=[r.as_dict() for r in results],
-                             message=result.message, attempts=attempts)
+            record(metrics=result.metrics, checks=[r.as_dict() for r in results], message=result.message,
+                   attempts=attempts)
             shown = ", ".join(f"{k}={v}" for k, v in result.metrics.items())
             self.state.event(self.clock.now(), f"step {step.name}: {shown + ' — ' if shown else ''}"
-                             f"{'passed' if passed else 'failed: ' + reason}", name)
+                             f"{'passed' if passed else 'failed: ' + reason}", where)
             elapsed = self.clock.now() - started
             if step.hold is not None:
                 if not passed:
-                    return self._step_failed(platform, i, step, f"stopped passing after {format_duration(elapsed)}: "
-                                             f"{reason}", result)
+                    return False, f"stopped passing after {format_duration(elapsed)}: {reason}", result
                 if elapsed >= step.hold:
-                    return "passed"
+                    return True, "", result
                 self._sleep(min(step.every, step.hold - elapsed).total_seconds())
             elif not passed and step.until is not None:
                 if elapsed + step.every > step.until:
-                    return self._step_failed(platform, i, step, f"still failing after {format_duration(step.until)}: "
-                                             f"{reason}", result)
-                self.state.update_platform(name, message=f"step {step.name}: waiting for {reason}")
+                    return False, f"still failing after {format_duration(step.until)}: {reason}", result
+                waiting(f"step {step.name}: waiting for {reason}")
                 self._sleep(step.every.total_seconds())
             elif not passed:
-                return self._step_failed(platform, i, step, reason, result)
+                return False, reason, result
             else:
-                return "passed"
+                return True, "", result
+
+    # ---- departure steps (train.before / train.after) -----------------------
+
+    def _departure_context(self, metrics: dict, status: str = "") -> connectors.Context:
+        return connectors.Context(
+            train=self.cfg.name, version=self.version, sha=self.sha, previous_version=self.previous_version,
+            departure=self.version, triggered_by=os.environ.get("TRAINTRAINTRAIN_TRIGGERED_BY"),
+            dry_run=self.dry_run, steps=metrics, runner=self.runner, status=status)
+
+    def _departure_record(self, phase: str, i: int, **fields) -> None:
+        with self.state.lock:
+            self.state.data["departure_steps"][phase][i].update(fields)
+            self.state.save()
+
+    def _run_departure_steps(self, phase: str, steps: list, status: str = "") -> str | None:
+        """Run train.before or train.after once. Returns why `before` failed, else None.
+
+        `before` steps that already passed are kept on resume (so a change ticket isn't
+        raised twice); `after` steps run every time the departure ends, and their
+        failures are recorded but change nothing.
+        """
+        if not steps:
+            return None
+        records = self.state.data.setdefault("departure_steps", {})
+        old = records.get(phase) or []
+        if phase == "after" or [r.get("name") for r in old] != [s.name for s in steps]:
+            records[phase] = [{**s.summary(), "status": "pending"} for s in steps]
+        self.state.save()
+        metrics = self._departure_metrics
+        for i, step in enumerate(steps):
+            rec = records[phase][i]
+            if phase == "before" and rec.get("status") in ("passed", "warned", "skipped"):
+                metrics[step.name] = rec.get("metrics") or {}
+                continue
+
+            def record(i=i, **fields):
+                self._departure_record(phase, i, **fields)
+            record(status="running", started_at=_iso(self.clock.now()))
+            try:
+                if step.kind == "wait":
+                    self.state.event(self.clock.now(), f"{'[dry-run] ' if self.dry_run else ''}{phase} step "
+                                     f"{step.name}: waiting {format_duration(step.duration)}")
+                    if not self.dry_run:
+                        self._sleep(step.duration.total_seconds())
+                    record(status="passed", finished_at=_iso(self.clock.now()))
+                    continue
+                if self.dry_run:
+                    connector = self.cfg.connectors[step.connector]
+                    self.state.event(self.clock.now(), f"[dry-run] {phase} step {step.name}: "
+                                     f"{connector.type_name} connector {step.connector!r}")
+                    record(status="skipped", finished_at=_iso(self.clock.now()))
+                    continue
+                passed, reason, _ = self._attempts(step, self._departure_context(metrics, status), metrics,
+                                                   record, None, lambda msg: None)
+            except BrakeApplied:
+                record(status="stopped", finished_at=_iso(self.clock.now()))
+                raise
+            if passed:
+                record(status="passed", finished_at=_iso(self.clock.now()))
+            elif step.on_fail == "warn" or phase == "after":
+                record(status="warned" if step.on_fail == "warn" else "failed", message=reason,
+                       finished_at=_iso(self.clock.now()))
+                self.state.event(self.clock.now(), f"{phase} step {step.name} failed"
+                                 f"{', carrying on (on_fail: warn)' if phase == 'before' else ''}: {reason}")
+            else:
+                record(status="failed", message=reason, finished_at=_iso(self.clock.now()))
+                return f"step {step.name} failed: {reason}"
+        return None
+
+    def _after(self, status: str) -> None:
+        if not self.cfg.after_steps:
+            return
+        # An emergency brake that stopped the journey shouldn't also stop the clean-up.
+        self.backend.delete_request(self.cfg.name, self.version, BRAKE)
+        try:
+            self._run_departure_steps("after", self.cfg.after_steps, status)
+        except BrakeApplied:
+            self.state.event(self.clock.now(), "after steps stopped by the emergency brake")
+        except Exception as e:  # noqa: BLE001 - the departure is over; report, don't crash
+            log.error("after steps failed: %s", e)
 
     def _step_failed(self, platform: Platform, i: int, step: Step, reason: str, result) -> str:
         if step.on_fail == "warn":
@@ -767,7 +875,15 @@ class Train:
                 return SUCCEEDED
             heartbeat = self._start_heartbeat()
             try:
-                return self._journey()
+                try:
+                    why = self._run_departure_steps("before", self.cfg.before_steps)
+                except BrakeApplied:
+                    status = self._finish(ABORTED, "emergency brake applied; re-run the same command to resume")
+                else:
+                    status = (self._finish(FAILED, f"departure stopped before the first stop: {why}")
+                              if why else self._journey())
+                self._after(status)
+                return status
             finally:
                 heartbeat.set()
         finally:
