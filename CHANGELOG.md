@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- An example and a guide for checking Databricks before deploying: workspace
+  connectivity, a job's last run, and SQL warehouse state (`examples/databricks`, and
+  "Checking Databricks status" in docs/connectors.md).
+
 ## [0.3.0] - 2026-10-23
 
 ### Added

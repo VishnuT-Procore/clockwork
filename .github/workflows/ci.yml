@@ -34,6 +34,7 @@ jobs:
         run: |
           traintraintrain -c examples/train.yaml plan
           traintraintrain -c examples/pipeline/train.yaml connectors list
+          traintraintrain -c examples/databricks/train.yaml connectors list
           traintraintrain -c examples/driver/train.yaml plan
 
 

@@ -1,0 +1,69 @@
+# Check Databricks before (and while) a train deploys: can we reach the workspace and
+# run SQL, did the last run of a job succeed, and what state is the SQL warehouse in.
+# See "Checking Databricks status" in docs/connectors.md.
+#
+#   export DATABRICKS_HOST=https://<workspace>.cloud.databricks.com
+#   export DATABRICKS_TOKEN=dapi...            # or use a service principal, see below
+#   export DATABRICKS_WAREHOUSE_ID=<id>
+#   traintraintrain -c examples/databricks/train.yaml connectors test lakehouse
+#
+# Replace 123456 (job id) and abc123def456 (warehouse id) below with yours.
+connectors:
+  lakehouse:                          # SQL on a warehouse, and running jobs
+    type: databricks
+    host: ${DATABRICKS_HOST}
+    token: ${DATABRICKS_TOKEN}
+    # client_id: ${DATABRICKS_CLIENT_ID}          # instead of token: a service principal
+    # client_secret: ${DATABRICKS_CLIENT_SECRET}
+    warehouse_id: ${DATABRICKS_WAREHOUSE_ID}
+  databricks-api:                     # any other Databricks REST call (job and warehouse status)
+    type: http
+    base_url: ${DATABRICKS_HOST}
+    headers: {Authorization: "Bearer ${DATABRICKS_TOKEN}"}
+
+train:
+  name: payments-api
+  deploy_command: "echo 'helm upgrade api --kube-context {cluster} --set image.tag={version}'"
+  inspection_command: "echo '{platform}: GET /healthz -> 200'"
+  inspection_interval: 2s
+  default_dwell: 5s
+  steps:
+    - name: databricks-ok             # can we reach the workspace and run SQL?
+      use: lakehouse
+      query: "select 1 as ok, current_user() as user"
+      expect: ["ok == 1"]
+      timeout: 5m                     # a stopped warehouse can take a few minutes to start
+    - name: last-etl                  # did the most recent completed run of the job succeed?
+      use: databricks-api
+      request:
+        path: /api/2.1/jobs/runs/list
+        query: {job_id: "123456", completed_only: "true", limit: "1"}
+      metrics: {result_state: runs.0.state.result_state, run_url: runs.0.run_page_url}
+      expect: ["result_state == 'SUCCESS'"]
+      on_fail: warn                   # change to halt once the job id is right
+    - name: warehouse                 # the warehouse's state: RUNNING, STARTING, STOPPED, ...
+      use: databricks-api
+      request: {path: "/api/2.0/sql/warehouses/abc123def456"}
+      metrics: {state: state, sessions: num_active_sessions}
+      on_fail: warn
+    # - name: data-fresh              # your table was updated in the last hour
+    #   use: lakehouse
+    #   query: "select timestampdiff(MINUTE, max(updated_at), current_timestamp()) as minutes_old from main.payments.transactions"
+    #   expect: ["minutes_old < 60"]
+    - deploy
+    # - name: validate                # run a validation job for this region and wait for it
+    #   use: lakehouse
+    #   job: 123456
+    #   params: {region: "{platform}", version: "{version}"}
+    #   expect: ["result_state == 'SUCCESS'"]   # plus anything the notebook returns via dbutils.notebook.exit
+    - dwell
+
+stops:
+  - name: canary
+    platforms:
+      - {name: us-west-2-canary, vars: {cluster: canary}}
+  - name: atlantic
+    parallel_platforms: 2
+    platforms:
+      - {name: us-east-1, vars: {cluster: use1}}
+      - {name: eu-west-1, vars: {cluster: euw1}}

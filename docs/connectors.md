@@ -175,6 +175,47 @@ lakehouse:
     with `dbutils.notebook.exit(json.dumps({"rows_rejected": 2}))`.
   - A run that doesn't finish within the step's `timeout` is cancelled.
 
+#### Checking Databricks status
+
+[`examples/databricks/train.yaml`](../examples/databricks/train.yaml) runs three checks
+before each platform deploys:
+
+| Step | Connector | Passes when |
+|---|---|---|
+| `databricks-ok` | `lakehouse` (databricks): `select 1 as ok, current_user() as user` | the workspace answers and SQL runs |
+| `last-etl` | `databricks-api` (http): `GET /api/2.1/jobs/runs/list?job_id=…&completed_only=true&limit=1` | the job's most recent completed run has `result_state == 'SUCCESS'` |
+| `warehouse` | `databricks-api` (http): `GET /api/2.0/sql/warehouses/<id>` | always; it reports `state` (RUNNING, STOPPED, …). Add `expect: ["state == 'RUNNING'"]` to require it |
+
+The `http` connector reaches any Databricks REST endpoint the `databricks` type doesn't
+wrap: the same host and token, with `metrics:` picking fields from the reply.
+
+What you need from the workspace:
+
+| Value | Where | Goes in |
+|---|---|---|
+| Workspace URL | the browser address bar, `https://<name>.cloud.databricks.com` | `DATABRICKS_HOST` |
+| Token | avatar → Settings → Developer → Access tokens (or a service principal's OAuth secret) | `DATABRICKS_TOKEN` (or `client_id` / `client_secret`) |
+| SQL warehouse ID | SQL Warehouses → the warehouse → Connection details; the end of `/sql/1.0/warehouses/<id>` | `DATABRICKS_WAREHOUSE_ID`, and the `warehouse` step's path |
+| Job ID | Workflows → the job; the number in its URL | the `last-etl` step's `job_id` |
+
+Try each check before relying on it:
+
+```bash
+traintraintrain -c train.yaml connectors test lakehouse
+traintraintrain -c train.yaml connectors test databricks-api --step last-etl
+traintraintrain -c train.yaml connectors test databricks-api --step warehouse
+```
+
+In Docker, pass the variables through in `docker-compose.yml`'s `environment:`
+(`DATABRICKS_TOKEN: ${DATABRICKS_TOKEN}`, and so on).
+
+| You see | Fix |
+|---|---|
+| `environment variable DATABRICKS_TOKEN isn't set` | export it where traintraintrain runs; in Docker, add it to `environment:` and recreate the container |
+| `HTTP 401` / `HTTP 403` | the token is wrong or expired, or lacks permission on the job or warehouse |
+| `the query didn't finish in time` | the warehouse was starting; raise the step's `timeout` (the example uses 5m) |
+| `no metric 'result_state'` | wrong job ID, or the job has no completed runs yet |
+
 ### driver
 
 ```yaml
