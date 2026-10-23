@@ -11,7 +11,7 @@ services:
     build:
       context: ../..
     # Or use a published image:
-    # image: ghcr.io/vishnut-procore/traintraintrain:0.2.0
+    # image: ghcr.io/vishnut-procore/traintraintrain:0.3.0
     ports:
       - "127.0.0.1:8080:8080"     # localhost only; put an SSO proxy in front for shared use
     environment:

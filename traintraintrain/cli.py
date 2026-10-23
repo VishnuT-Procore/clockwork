@@ -1,4 +1,4 @@
-"""traintraintrain CLI: timetable / service / depart / board / clear-signal / brake / ui.
+"""traintraintrain CLI: timetable / service / preview / depart / board / live / clear-signal / brake / ui.
 
 The pre-rename command names (plan, windows, run, status, approve, abort) still work.
 """
@@ -16,12 +16,13 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from . import config as config_mod
+from . import live
 from ._compat import env
 from .notify import Notifier, SlackNotifier, build_notifier
 from .timetable import format_duration, parse_duration
 from .storage import DatabaseLogHandler, FileBackend, PostgresBackend, StorageError, backend_for
 from .train import (
-    SUCCEEDED, Train, apply_brake, clear_signal, load_departure, project,
+    SUCCEEDED, Train, apply_brake, clear_signal, load_departure, project, shell_runner,
 )
 
 
@@ -114,24 +115,121 @@ def cmd_board(args, cfg) -> int:
     print(f"departed {st['started_at']}  {ended} {st['finished_at'] or '-'}\n")
     ch = st.get("changes")
     if ch:
-        n = len([ln for ln in (ch.get("output") or "").splitlines() if ln.strip()])
-        if ch.get("url"):
-            print(f"what's in this release: {ch['url']}")
-        if ch.get("command"):
-            print(f"changes since {ch.get('previous_version')}: {n} line(s) (board --changes to list)")
-        if ch.get("error"):
-            print(f"changes: {ch['error']}")
-        if args.changes and ch.get("output"):
-            print("\n" + ch["output"].rstrip())
+        groups = ch.get("groups") or [{**ch, "platforms": None, "up_to_date": False}]
+        for g in groups:
+            where = f"{', '.join(g['platforms'])}: " if g.get("platforms") and len(groups) > 1 else ""
+            _print_changes(g, where, args.changes)
         print()
-    print(f"  {'STOP':<12} {'PLATFORM':<18} {'STATUS':<16} REMARKS")
+    print(f"  {'STOP':<12} {'PLATFORM':<18} {'FROM':<14} {'STATUS':<16} REMARKS")
     for name, p in st["platforms"].items():
-        print(f"  {p['stop']:<12} {name:<18} {_label(p['status']):<16} {p['message']}")
+        print(f"  {p['stop']:<12} {name:<18} {p.get('from_version') or '-':<14} "
+              f"{_label(p['status']):<16} {p['message']}")
     if args.events:
         print()
         for e in st["events"][-args.events:]:
             where = f"[{e['platform']}] " if e.get("platform") else ""
             print(f"  {e['at']}  {where}{e['message']}")
+    return 0
+
+
+def _print_changes(g: dict, where: str, full: bool) -> None:
+    n = live.change_count(g)
+    if g.get("up_to_date"):
+        print(f"{where}already running this version")
+        return
+    if g.get("url"):
+        print(f"{where}what's in this release: {g['url']}")
+    if g.get("command"):
+        print(f"{where}changes since {g.get('previous_version')}: {n} line(s)"
+              + ("" if full else " (--changes to list)"))
+    if g.get("error"):
+        print(f"{where}changes: {g['error']}")
+    if full and g.get("output"):
+        print("\n" + g["output"].rstrip() + "\n")
+
+
+def _since(at: str | None) -> str:
+    return at.replace("T", " ")[:16] if at else "-"
+
+
+def cmd_live(args, cfg) -> int:
+    backend = backend_for(cfg)
+    if args.history:
+        rows = backend.live_history(cfg.name, args.platform, limit=args.history)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+            return 0
+        print(f"  {'AT (UTC)':<17} {'PLATFORM':<18} {'WHAT':<16} {'VERSION':<16} {'BEFORE':<16} DEPARTURE / BY")
+        for r in rows:
+            who = " / ".join(x for x in (r.get("departure"), r.get("by")) if x) or "-"
+            print(f"  {_since(r['at']):<17} {r['platform']:<18} {_label(r['status']):<16} "
+                  f"{r.get('version') or '-':<16} {r.get('previous_version') or '-':<16} {who}")
+        return 0
+    resolved = live.resolve(cfg, backend, shell_runner, use_probe=args.probe)
+    if args.json:
+        print(json.dumps(list(resolved.values()), indent=2))
+        return 0
+    print(f"live versions of {cfg.name} ({backend.describe()})\n")
+    print(f"  {'STOP':<12} {'PLATFORM':<18} {'VERSION':<16} {'SINCE (UTC)':<17} SOURCE")
+    for name, r in resolved.items():
+        rec = r["record"] or {}
+        source = {live.SOURCE_PROBE: "asked the platform", live.SOURCE_RECORDED: "recorded",
+                  live.SOURCE_HISTORY: "departure history"}.get(r["source"], "unknown")
+        if r["source"] == live.SOURCE_RECORDED and rec.get("status") not in (None, live.DEPLOYED):
+            source += f" ({_label(rec['status'])})"
+        if r["drift"]:
+            source += f"; recorded {rec['version']}"
+        if r["probe_error"]:
+            source += f"; {r['probe_error']}"
+        print(f"  {r['stop']:<12} {name:<18} {r['version'] or '-':<16} {_since(rec.get('at')):<17} {source}")
+    return 0
+
+
+def cmd_live_set(args, cfg) -> int:
+    names = {p.name for p in cfg.platforms}
+    unknown = [p for p in args.platform if p not in names]
+    if unknown:
+        print(f"unknown platform(s): {', '.join(unknown)}", file=sys.stderr)
+        return 1
+    if not live.VERSION_RE.match(args.version):
+        print(f"not a valid version: {args.version!r}", file=sys.stderr)
+        return 1
+    backend = backend_for(cfg)
+    known = live.recorded(cfg, backend)
+    by = args.by or getpass.getuser()
+    for name in args.platform:
+        before = (known.get(name) or {}).get("version")
+        backend.set_live(cfg.name, live.live_record(name, args.version, live.SET_BY_HAND, before, by=by))
+        print(f"{name}: live version set to {args.version}" + (f" (was {before})" if before else ""))
+    return 0
+
+
+def cmd_preview(args, cfg) -> int:
+    if not live.VERSION_RE.match(args.version):
+        print(f"not a valid version: {args.version!r}", file=sys.stderr)
+        return 1
+    result = live.preview(cfg, backend_for(cfg), args.version, shell_runner, fallback=args.previous_version)
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    print(f"departing {cfg.name} {args.version} now would change:\n")
+    print(f"  {'STOP':<12} {'PLATFORM':<18} {'LIVE NOW':<16} CHANGES")
+    by_platform = {name: g for g in result["changes"]["groups"] for name in g["platforms"]}
+    for r in result["platforms"]:
+        g = by_platform[r["platform"]]
+        if g["up_to_date"]:
+            what = "already running it"
+        elif not r["version"]:
+            what = "nothing to compare (never deployed?)"
+        elif g.get("command"):
+            what = f"{live.change_count(g)} change(s)" if g.get("ok") else (g.get("error") or "")
+        else:
+            what = f"{r['version']} -> {args.version}"
+        print(f"  {r['stop']:<12} {r['platform']:<18} {r['version'] or '-':<16} {what}")
+    print()
+    groups = [g for g in result["changes"]["groups"] if g["previous_version"] and not g["up_to_date"]]
+    for g in groups:
+        _print_changes(g, f"{', '.join(g['platforms'])}: " if len(groups) > 1 else "", args.changes)
     return 0
 
 
@@ -194,7 +292,15 @@ def cmd_db_import(args, cfg) -> int:
         for entry in src.audit_entries(cfg.name, version):
             backend.audit({**entry, "train": cfg.name})
         copied += 1
-    print(f"imported {copied} departure(s) from {src.state_dir} into {backend.describe()}"
+    live_rows = 0
+    if not backend.live(cfg.name) or args.overwrite:
+        for entry in reversed(src.live_history(cfg.name, limit=10**9)):
+            backend.set_live(cfg.name, entry, current=False)
+        for rec in src.live(cfg.name).values():
+            backend.set_live(cfg.name, rec, history=False)
+            live_rows += 1
+    print(f"imported {copied} departure(s) and {live_rows} live version(s) from {src.state_dir} "
+          f"into {backend.describe()}"
           + (f"; skipped {skipped} already there (use --overwrite to replace)" if skipped else ""))
     return 0
 
@@ -252,7 +358,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("depart", aliases=["run"], help="start (or resume) the train for a version")
     sp.add_argument("--version", required=True)
-    sp.add_argument("--previous-version", help="version to roll back to on failure")
+    sp.add_argument("--previous-version",
+                    help="for platforms with no known live version: compare with and roll back to this")
     sp.add_argument("--dry-run", action="store_true",
                     help="print commands, respect timetables, skip dwell")
     sp.add_argument("--retry-failed", action="store_true",
@@ -268,6 +375,28 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--changes", action="store_true", help="list what's in this release")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_board)
+
+    sp = sub.add_parser("live", help="which version each platform runs (and its history)")
+    sp.add_argument("--probe", action="store_true", help="ask each platform via live_version_command")
+    sp.add_argument("--history", type=int, nargs="?", const=30, metavar="N",
+                    help="show the last N changes instead (default 30)")
+    sp.add_argument("--platform", help="with --history: only this platform")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_live)
+
+    sp = sub.add_parser("live-set", help="record the live version of platforms by hand "
+                                         "(after a hotfix or rollback made outside traintraintrain)")
+    sp.add_argument("--platform", action="append", required=True, help="repeat for several")
+    sp.add_argument("--version", required=True)
+    sp.add_argument("--by", help="who is making the change (default: current user)")
+    sp.set_defaults(func=cmd_live_set)
+
+    sp = sub.add_parser("preview", help="what departing a version now would change on each platform")
+    sp.add_argument("--version", required=True)
+    sp.add_argument("--previous-version", help="assume this for platforms with no known live version")
+    sp.add_argument("--changes", action="store_true", help="list the changes, not just count them")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_preview)
 
     sp = sub.add_parser("brake", aliases=["abort"], help="pull the emergency brake on a train")
     sp.add_argument("--version", required=True)

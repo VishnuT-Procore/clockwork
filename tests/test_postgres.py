@@ -305,3 +305,49 @@ def test_web_ui_end_to_end_on_postgres(db_url, tmp_path):
         except subprocess.TimeoutExpired:
             ui.kill()
     assert not (tmp_path / "files").exists()  # everything went to Postgres
+
+
+# ---- live versions -----------------------------------------------------------------
+
+def test_live_versions_stored_in_postgres(db_url, tmp_path):
+    from traintraintrain import live
+    from traintraintrain.storage import live_record
+    cfg = pg_cfg(tmp_path, train__rollback_scope="none")
+    backend = backend_for(cfg)
+    clock = FakeClock(NOW)
+    assert Train(cfg, "v1", runner=FakeRunner(clock), clock=clock).run() == SUCCEEDED
+    clock = FakeClock(NOW)
+    assert Train(cfg, "v2", runner=FakeRunner(clock, fail={"deploy us-east": 1}), clock=clock).run() == FAILED
+    assert {k: v["version"] for k, v in backend.live(cfg.name).items()} == {
+        "us-canary": "v2", "us-east": "v1", "eu-west": "v2"}
+    row = backend.live(cfg.name)["us-canary"]
+    assert (row["status"], row["previous_version"], row["departure"]) == (live.DEPLOYED, "v1", "v2")
+    hist = backend.live_history(cfg.name, "us-east")
+    assert [(h["status"], h["version"]) for h in hist] == [(live.FAILED_ATTEMPT, "v2"), (live.DEPLOYED, "v1")]
+    st = load_departure(cfg, "v2")
+    assert {p["from_version"] for p in st["platforms"].values()} == {"v1"}
+    backend.set_live(cfg.name, live_record("us-east", "v1.1", live.SET_BY_HAND, "v1", by="ops"))
+    assert backend.live(cfg.name)["us-east"]["by"] == "ops"
+    with psycopg.connect(db_url, autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM train_platform_versions").fetchone()[0] == 3
+        assert conn.execute("SELECT max(version) FROM train_schema").fetchone()[0] == 2
+    assert backend.counts()["live platform versions"] == 3
+
+
+def test_db_import_copies_live_versions(db_url, tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("TRAINTRAINTRAIN_DATABASE_URL")
+    files_cfg = make_cfg(tmp_path)
+    clock = FakeClock(NOW)
+    Train(files_cfg, "v1", runner=FakeRunner(clock), clock=clock).run()
+    monkeypatch.setenv("TRAINTRAINTRAIN_DATABASE_URL", db_url)
+    path = tmp_path / "train.yaml"
+    import yaml
+    path.write_text(yaml.safe_dump({"train": {"name": "svc", "deploy_command": "true",
+                                              "state_dir": str(tmp_path / "state")},
+                                    "stops": [{"platforms": ["us-canary", "us-east", "eu-west"]}]}))
+    assert cli.main(["-c", str(path), "db", "import"]) == 0
+    assert "and 3 live version(s)" in capsys.readouterr().out
+    backend = backend_for(pg_cfg(tmp_path))
+    assert {k: v["version"] for k, v in backend.live("svc").items()} == {
+        "us-canary": "v1", "us-east": "v1", "eu-west": "v1"}
+    assert len(backend.live_history("svc")) == 3

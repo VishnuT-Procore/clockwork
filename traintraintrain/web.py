@@ -10,7 +10,6 @@ import hmac
 import json
 import logging
 import os
-import re
 import signal
 import socketserver
 import subprocess
@@ -23,22 +22,25 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import live
 from ._compat import LEGACY_HEADER_VALUE, env
 from .config import TrainConfig
 from .timetable import NoServiceError, format_duration
 from .train import (
     ACTIVE_STATUSES, SIGNAL_WAITING, SUCCEEDED, apply_brake, clear_signal, migrate_state, project,
+    shell_runner,
 )
 from .storage import BRAKE, SIGNAL, backend_for
 
 log = logging.getLogger("traintraintrain")
 
 STATIC_DIR = Path(__file__).parent / "ui"
-VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$")
+VERSION_RE = live.VERSION_RE  # letters, digits and . _ + - / (for monorepo tags like api/v1.2.0)
 USER_HEADERS = ("X-Forwarded-User", "X-Auth-Request-User", "X-Forwarded-Email",
                 "X-Auth-Request-Email")
 LOG_TAIL_LINES = 300
 SHUTDOWN_GRACE_SECONDS = 20.0
+PREVIEW_CACHE_SECONDS = 120.0
 
 
 class Server(ThreadingHTTPServer):
@@ -74,6 +76,8 @@ class App:
         self._children: list[tuple[subprocess.Popen, str]] = []
         self._lock = threading.Lock()
         self.backend = backend_for(cfg)
+        self.runner = shell_runner
+        self._previews: dict[tuple, tuple[float, dict]] = {}
         log.info("state storage: %s", self.backend.describe())
 
     # ---- storage -----------------------------------------------------------
@@ -103,7 +107,7 @@ class App:
     def _check_version(version) -> str:
         if not isinstance(version, str) or not VERSION_RE.match(version):
             raise ApiError(HTTPStatus.BAD_REQUEST,
-                           "version must be 1-100 chars of letters, digits, . _ + -")
+                           "version must be 1-100 chars of letters, digits, . _ + - /")
         return version
 
     # ---- views -------------------------------------------------------------
@@ -134,7 +138,8 @@ class App:
                 "has_rollback": bool(self.cfg.rollback_command),
                 "slack": self.cfg.slack is not None, "now": _iso(now), "stops": stops,
                 "changes_url": self.cfg.changes.url if self.cfg.changes else None,
-                "changes_command": bool(self.cfg.changes and self.cfg.changes.command)}
+                "changes_command": bool(self.cfg.changes and self.cfg.changes.command),
+                "live_probe": bool(self.cfg.live_version_command)}
 
     def timetable_view(self) -> dict:
         try:
@@ -147,6 +152,35 @@ class App:
                  "held": format_duration(p.start - p.earliest) if p.start > p.earliest else None}
                 for p in planned]}
             for s, planned in projected]}
+
+    def live_view(self) -> dict:
+        """What each platform runs, as recorded (no probing: this is polled)."""
+        known = live.recorded(self.cfg, self.backend)
+        platforms = []
+        for p in self.cfg.platforms:
+            rec = known.get(p.name) or {}
+            platforms.append({"platform": p.name, "stop": p.stop, "version": rec.get("version"),
+                              "status": rec.get("status"), "source": rec.get("source"),
+                              "departure": rec.get("departure"), "at": rec.get("at"), "by": rec.get("by")})
+        return {"platforms": platforms, "history": self.backend.live_history(self.cfg.name, limit=50)}
+
+    def preview(self, version: str, previous_version: str | None = None) -> dict:
+        """Each platform's live version and what `version` would change there. Cached briefly,
+        since it runs the live-version and changes commands."""
+        version = self._check_version(version)
+        prev = self._check_version(previous_version) if previous_version else None
+        key = (version, prev)
+        now = time.monotonic()
+        with self._lock:
+            self._previews = {k: v for k, v in self._previews.items() if now - v[0] < PREVIEW_CACHE_SECONDS}
+            if key in self._previews:
+                return self._previews[key][1]
+        result = live.preview(self.cfg, self.backend, version, self.runner, fallback=prev,
+                              collected_at=_iso(_now()))
+        result["exists"] = self.backend.exists(self.cfg.name, version)
+        with self._lock:
+            self._previews[key] = (now, result)
+        return result
 
     def _summary(self, st: dict) -> dict:
         counts: dict[str, int] = {}
@@ -247,6 +281,8 @@ class App:
             extra.append("--dry-run")
         self._audit(user, "depart", version, previous_version=prev,
                     dry_run=bool(body.get("dry_run")))
+        with self._lock:
+            self._previews.clear()
         self._spawn(version, extra, user)
         return {"ok": True, "version": version}
 
@@ -356,6 +392,11 @@ def make_handler(app: App):
                 self._api(app.list_departures)
             elif url.path in ("/api/departure", "/api/run"):
                 self._api(lambda: app.get_departure((q.get("version") or [""])[0]))
+            elif url.path == "/api/live":
+                self._api(app.live_view)
+            elif url.path == "/api/preview":
+                self._api(lambda: app.preview((q.get("version") or [""])[0],
+                                              (q.get("previous_version") or [""])[0] or None))
             elif url.path == "/api/whoami":
                 self._api(lambda: {"user": self._user(), "auth": bool(app.token)})
             else:

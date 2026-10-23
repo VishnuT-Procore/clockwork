@@ -79,6 +79,9 @@ class TrainConfig:
     # Set from TRAINTRAINTRAIN_DATABASE_URL; when present, state lives in Postgres.
     database_url: str | None = None
     changes: Changes | None = None
+    # Optional: asks a platform which version it's running (prints it as the last line).
+    live_version_command: str | None = None
+    live_version_timeout: timedelta = timedelta(seconds=30)
 
     @property
     def platforms(self) -> list[Platform]:
@@ -214,4 +217,6 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         slack=slack,
         database_url=env("DATABASE_URL"),
         changes=changes,
+        live_version_command=t.get("live_version_command"),
+        live_version_timeout=parse_duration(t.get("live_version_timeout", "30s")),
     )

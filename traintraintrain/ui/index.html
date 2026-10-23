@@ -238,6 +238,14 @@ dialog input[type=text], dialog input[type=password] { width: 100%; padding: 9px
 dialog .hint { color: var(--ink-3); font-size: 12.5px; margin-top: 4px; }
 dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .preview { margin-top: 14px; max-height: 230px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+#dpPreview { max-height: 360px; }
+.preview .warnline { padding: 9px 12px; background: var(--warn-bg); border-bottom: 1px solid var(--border); font-size: 13px; }
+details.grp { border-top: 1px solid var(--border); }
+details.grp > summary { cursor: pointer; padding: 9px 12px; font-size: 13.5px; font-weight: 600; list-style-position: inside; }
+details.grp .commit { padding: 5px 12px; font-size: 13px; grid-template-columns: 84px minmax(0, 1fr); }
+details.grp .grp-foot { padding: 6px 12px 10px; font-size: 13px; }
+.ver-cell code { font-size: .9em; }
+.drift { color: var(--serious); font-weight: 600; }
 .preview table.grid td, .preview table.grid th { padding: 7px 12px; }
 #toasts { position: fixed; bottom: 18px; right: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
 .toast { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); padding: 10px 14px;
@@ -310,13 +318,12 @@ dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top
     <h3>New departure</h3>
     <p>Rolls a version out stop by stop, within each platform's timetable.</p>
     <label class="field" for="dpVersion">Version to deploy</label>
-    <input type="text" id="dpVersion" required pattern="[A-Za-z0-9][A-Za-z0-9._+\-]{0,99}" placeholder="v1.5.0" autocomplete="off">
-    <label class="field" for="dpPrev">Rollback target (previous version)</label>
-    <input type="text" id="dpPrev" pattern="[A-Za-z0-9][A-Za-z0-9._+\-]{0,99}" placeholder="v1.4.0" autocomplete="off">
-    <div class="hint">Used by the rollback command if a platform fails.</div>
-    <div class="hint" id="dpChanges"></div>
+    <input type="text" id="dpVersion" required pattern="[A-Za-z0-9][A-Za-z0-9._+\/\-]{0,99}" placeholder="v1.5.0" autocomplete="off">
+    <div class="preview" id="dpPreview"><div class="empty small">Enter a version to see what it changes on each platform.</div></div>
+    <label class="field" for="dpPrev">Previous version <span class="muted" style="font-weight:500">(optional)</span></label>
+    <input type="text" id="dpPrev" pattern="[A-Za-z0-9][A-Za-z0-9._+\/\-]{0,99}" placeholder="only needed if a platform shows unknown" autocomplete="off">
+    <div class="hint">Each platform compares with, and rolls back to, the version it runs now. This is only used for platforms with no known version.</div>
     <label class="check" style="margin-top:14px"><input type="checkbox" id="dpDry"> Dry run: print commands, skip dwell</label>
-    <div class="preview" id="dpTimetable"><div class="empty small">Loading timetable…</div></div>
     <div class="buttons">
       <button class="btn" value="cancel" formnovalidate>Cancel</button>
       <button class="btn primary" value="ok">Depart</button>
@@ -622,7 +629,7 @@ function renderStops(dep) {
       const running = ACTIVE_PLATFORM.has(p.status);
       const took = p.started_at ? (p.finished_at ? dur(p.started_at, p.finished_at) : running ? dur(p.started_at) + " so far" : "") : "";
       const main = `<tr>
-        <td class="name" data-label="Platform"><div>${esc(cp.name)}</div></td>
+        <td class="name" data-label="Platform"><div>${esc(cp.name)}${p.from_version ? `<span class="two">${p.from_version === dep.version ? "already on it" : "from " + esc(p.from_version)}</span>` : ""}</div></td>
         <td data-label="Status"><div>${chip(p.status)}</div></td>
         <td data-label="Timetable"><div>${["succeeded", "rolled_back"].includes(p.status) ? `<span class="muted">${esc(cp.timetable)}</span>` : serviceCell(cp)}</div></td>
         <td data-label="Started" class="num nowrap"><div>${p.started_at ? esc(clock(p.started_at)) : "<span class='muted'>—</span>"}</div></td>
@@ -690,26 +697,41 @@ function renderEvents(dep) {
   return `<div class="card">${out}</div>`;
 }
 
+const linesOf = (g) => ((g && g.output) || "").split("\n").filter((l) => l.trim());
 function changeLines(dep) {
-  return ((dep.changes && dep.changes.output) || "").split("\n").filter((l) => l.trim());
-}
-function renderChanges(dep) {
   const ch = dep.changes || {};
-  const lines = changeLines(dep);
-  const head = `<div class="changes-head">${icon("list", 16)}<span class="grow">${
-      ch.previous_version ? `Changes from <code>${esc(ch.previous_version)}</code> to <code>${esc(dep.version)}</code>` : "Changes"}${
-      lines.length ? ` · ${lines.length} ${lines.length === 1 ? "entry" : "entries"}` : ""}</span>
-    ${ch.url ? `<a class="link" href="${esc(ch.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)}Open the full comparison</a>` : ""}</div>`;
-  let body;
-  if (ch.error && !lines.length) body = `<div class="empty">${esc(cap(ch.error))}.</div>`;
-  else if (!lines.length) body = `<div class="empty">${ch.command ? "The changes command printed nothing." : "Follow the link above to see what changed."}</div>`;
-  else body = lines.map((l) => {
+  // Every distinct change across the platforms' groups (for the tab's count).
+  const all = (ch.groups || [ch]).flatMap(linesOf);
+  return [...new Set(all)];
+}
+function commitRows(lines) {
+  return lines.map((l) => {
     const m = l.match(/^([0-9a-f]{7,40})\s+(.*)$/);
     return m ? `<div class="commit"><span class="sha">${esc(m[1].slice(0, 9))}</span><span class="msg">${esc(m[2])}</span></div>`
              : `<div class="commit"><span class="sha"></span><span class="msg">${esc(l)}</span></div>`;
   }).join("");
-  const foot = ch.error && lines.length ? `<div class="changes-head small">${esc(cap(ch.error))}</div>` : "";
-  return `<div class="card">${head}${body}${foot}</div>`;
+}
+function renderChangeGroup(g, version, showWhere) {
+  const lines = linesOf(g);
+  const where = showWhere && g.platforms ? `<strong>${esc(g.platforms.join(", "))}</strong> · ` : "";
+  const what = g.up_to_date ? `already running <code>${esc(version)}</code>`
+    : g.previous_version ? `changes from <code>${esc(g.previous_version)}</code> to <code>${esc(version)}</code>` : "changes";
+  const head = `<div class="changes-head">${icon("list", 16)}<span class="grow">${where}${showWhere ? what : cap(what)}${
+      lines.length ? ` · ${lines.length} ${lines.length === 1 ? "entry" : "entries"}` : ""}</span>
+    ${g.url ? `<a class="link" href="${esc(g.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)}Open the full comparison</a>` : ""}</div>`;
+  let body;
+  if (g.up_to_date) body = `<div class="empty">Nothing new for ${showWhere ? "these platforms" : "this platform"}.</div>`;
+  else if (g.error && !lines.length) body = `<div class="empty">${esc(cap(g.error))}.</div>`;
+  else if (!lines.length) body = `<div class="empty">${g.command ? "The changes command printed nothing." : "Follow the link above to see what changed."}</div>`;
+  else body = commitRows(lines);
+  const foot = g.error && lines.length ? `<div class="changes-head small">${esc(cap(g.error))}</div>` : "";
+  return head + body + foot;
+}
+function renderChanges(dep) {
+  const ch = dep.changes || {};
+  const groups = ch.groups && ch.groups.length ? ch.groups : [ch];
+  const multi = groups.length > 1;
+  return groups.map((g) => `<div class="card" style="margin-bottom:12px">${renderChangeGroup(g, dep.version, multi)}</div>`).join("");
 }
 
 const ACTION_LABEL = { depart: "Dispatched", start: "Dispatched", resume: "Resumed", brake: "Pulled the brake",
@@ -821,8 +843,11 @@ function renderDeparture() {
 // ---- rendering: timetable overview ------------------------------------------
 async function renderOverview() {
   const main = $("main"), cfg = S.config;
-  let proj = null, projErr = "";
-  try { proj = await api("/api/timetable"); } catch (e) { projErr = e.message; }
+  let proj = null, projErr = "", liveNow = { platforms: [], history: [] };
+  const [p1, p2] = await Promise.allSettled([api("/api/timetable"), api("/api/live")]);
+  if (p1.status === "fulfilled") proj = p1.value; else projErr = p1.reason.message;
+  if (p2.status === "fulfilled") liveNow = p2.value;
+  const liveOf = Object.fromEntries(liveNow.platforms.map((x) => [x.platform, x]));
   if (S.selected) return; // navigated away while loading
   const all = cfg.stops.flatMap((s) => s.platforms);
   const open = all.filter((p) => p.in_service).length;
@@ -833,9 +858,10 @@ async function renderOverview() {
       <div class="facts">${s.parallel_platforms > 1 ? `<span class="fact">${s.parallel_platforms} at a time</span>` : ""}
         ${s.headway ? `<span class="fact">${icon("clock", 12)}headway ${esc(s.headway)}</span>` : ""}
         ${s.signal ? `<span class="fact t-neutral">${icon("signal", 12)}signal</span>` : ""}</div></div>
-    <table class="grid fixed"><colgroup><col style="width:26%"><col style="width:34%"><col style="width:28%"><col style="width:12%"></colgroup>
-    <thead><tr><th>Platform</th><th>Service now</th><th>Timetable</th><th>Dwell</th></tr></thead><tbody>` +
+    <table class="grid fixed"><colgroup><col style="width:22%"><col style="width:20%"><col style="width:28%"><col style="width:20%"><col style="width:10%"></colgroup>
+    <thead><tr><th>Platform</th><th>Live now</th><th>Service now</th><th>Timetable</th><th>Dwell</th></tr></thead><tbody>` +
     s.platforms.map((p) => `<tr><td class="name" data-label="Platform"><div>${esc(p.name)}</div></td>
+      <td data-label="Live now" class="ver-cell"><div>${liveCell(liveOf[p.name])}</div></td>
       <td data-label="Service now"><div>${serviceCell(p, false)}</div></td>
       <td data-label="Timetable"><div>${esc(p.timetable)}<span class="two">${esc(p.timezone)}</span></div></td>
       <td data-label="Dwell" class="num"><div>${esc(p.dwell)}</div></td></tr>`).join("") + `</tbody></table></section>`).join("");
@@ -867,9 +893,32 @@ async function renderOverview() {
     <div class="section-title">Platforms</div>${tables}
     <div class="section-title">Projected departures <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">if a train left now</span></div>
     <div class="card"><table class="grid"><thead><tr><th>Stop</th><th>Platform</th><th>Departs</th><th>Done by</th><th>Held</th></tr></thead>
-      <tbody>${projRows}</tbody></table></div>`;
+      <tbody>${projRows}</tbody></table></div>
+    <div class="section-title">Live version history</div>${renderLiveHistory(liveNow.history)}`;
   main.querySelectorAll("[data-jump]").forEach((b) => b.onclick = () =>
     document.getElementById("stop-" + b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+}
+
+const LIVE_WHAT = { deployed: "Deployed", rolled_back: "Rolled back to", failed: "Failed to deploy",
+  rollback_failed: "Rollback failed", aborted: "Aborted deploy of", observed: "Found running", set: "Set by hand to" };
+const LIVE_TONE = { deployed: "good", rolled_back: "serious", failed: "bad", rollback_failed: "bad", aborted: "bad",
+  observed: "warn", set: "neutral" };
+function liveCell(x) {
+  if (!x || !x.version) return `<span class="muted">unknown</span>`;
+  const sub = x.at ? `${x.status === "deployed" || !x.status ? "" : esc(LIVE_WHAT[x.status] || x.status) + " · "}${esc(rel(x.at))}` : "";
+  return `<code>${esc(x.version)}</code>${sub ? `<span class="two">${sub}</span>` : ""}`;
+}
+function renderLiveHistory(rows) {
+  if (!rows || !rows.length) return `<div class="card"><div class="empty">Nothing recorded yet. Each deploy, rollback and failure is recorded here.</div></div>`;
+  return `<div class="card"><table class="grid"><thead><tr><th>When</th><th>Platform</th><th>What</th><th>Version</th><th>Before</th><th>Departure / who</th></tr></thead><tbody>` +
+    rows.slice(0, 15).map((r) => `<tr>
+      <td data-label="When" class="num"><div>${esc(whenFull(r.at))}</div></td>
+      <td data-label="Platform" class="name"><div>${esc(r.platform)}</div></td>
+      <td data-label="What"><div><span class="t-${LIVE_TONE[r.status] || "neutral"}" style="color:var(--tone);font-weight:600">${esc(LIVE_WHAT[r.status] || r.status)}</span></div></td>
+      <td data-label="Version" class="ver-cell"><div>${r.version ? `<code>${esc(r.version)}</code>` : "<span class='muted'>—</span>"}</div></td>
+      <td data-label="Before" class="ver-cell"><div>${r.previous_version ? `<code>${esc(r.previous_version)}</code>` : "<span class='muted'>—</span>"}</div></td>
+      <td data-label="Departure / who"><div>${esc([r.departure, r.by].filter(Boolean).join(" · ") || "—")}</div></td></tr>`).join("") +
+    `</tbody></table></div>`;
 }
 
 // ---- actions --------------------------------------------------------------------
@@ -900,33 +949,78 @@ async function doAction(act) {
   refreshAll();
 }
 
+const VERSION_OK = /^[A-Za-z0-9][A-Za-z0-9._+\/-]{0,99}$/;
+const SOURCE_LABEL = { probe: "asked the platform", recorded: "recorded", history: "from past departures", given: "assumed (previous version)" };
+let dp = { times: {}, seq: 0, timer: null };
+
 async function openDepart() {
   const d = $("departDialog");
   $("dpVersion").value = "";
-  const lastGood = S.deps.find((x) => x.status === "succeeded");
-  $("dpPrev").value = lastGood ? lastGood.version : "";
+  $("dpPrev").value = "";
   $("dpDry").checked = false;
-  updateChangesLink();
   d.returnValue = "";
   d.showModal();
   $("dpVersion").focus();
+  dp.times = {};
+  loadPreview();
   try {
     const t = await api("/api/timetable");
-    $("dpTimetable").innerHTML = `<table class="grid"><thead><tr><th>Stop</th><th>Platform</th><th>Projected departure</th></tr></thead><tbody>` +
-      t.stops.flatMap((s) => s.platforms.map((p) => `<tr><td data-label="Stop"><div>${esc(s.name)}</div></td><td class="name" data-label="Platform"><div>${esc(p.name)}</div></td>
-        <td data-label="Departs" class="num"><div>${esc(whenFull(p.start))} <span class="muted">(${esc(rel(p.start))})</span></div></td></tr>`)).join("") + `</tbody></table>`;
-  } catch (e) { $("dpTimetable").innerHTML = `<div class="empty small">${esc(e.message)}</div>`; }
+    t.stops.forEach((s) => s.platforms.forEach((p) => { dp.times[p.name] = p.start; }));
+  } catch {}
+  loadPreview();
 }
-function updateChangesLink() {
-  const tpl = S.config && S.config.changes_url, v = $("dpVersion").value.trim(), prev = $("dpPrev").value.trim();
-  const el = $("dpChanges");
-  if (!tpl) { el.innerHTML = ""; return; }
-  if (!v || !prev) { el.textContent = "Enter both versions to see what's in this release."; return; }
-  const url = tpl.replaceAll("{version}", v).replaceAll("{previous_version}", prev).replaceAll("{train}", S.config.train);
-  el.innerHTML = `<a class="link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${icon("external", 12)}What's in ${esc(v)} since ${esc(prev)}</a>`;
+function schedulePreview() { clearTimeout(dp.timer); dp.timer = setTimeout(loadPreview, 450); }
+async function loadPreview() {
+  const v = $("dpVersion").value.trim(), prev = $("dpPrev").value.trim(), box = $("dpPreview");
+  const seq = ++dp.seq;
+  if (!VERSION_OK.test(v)) {
+    box.innerHTML = previewTable(null, v);
+    return;
+  }
+  if (!box.querySelector("table")) box.innerHTML = `<div class="empty small">Checking what each platform runs…</div>`;
+  try {
+    const q = "version=" + encodeURIComponent(v) + (VERSION_OK.test(prev) ? "&previous_version=" + encodeURIComponent(prev) : "");
+    const r = await api("/api/preview?" + q);
+    if (seq === dp.seq) box.innerHTML = previewTable(r, v);
+  } catch (e) { if (seq === dp.seq) box.innerHTML = `<div class="empty small">${esc(e.message)}</div>`; }
 }
-$("dpVersion").addEventListener("input", updateChangesLink);
-$("dpPrev").addEventListener("input", updateChangesLink);
+function previewTable(r, v) {
+  const groups = r ? r.changes.groups : [];
+  const byPlat = Object.fromEntries(groups.flatMap((g) => g.platforms.map((n) => [n, g])));
+  const plats = r ? r.platforms : S.config.stops.flatMap((s) => s.platforms.map((p) => ({ platform: p.name, stop: s.name })));
+  const rows = plats.map((x) => {
+    const g = byPlat[x.platform];
+    let live = `<span class="muted">—</span>`, what = `<span class="muted">—</span>`;
+    if (r) {
+      live = x.version ? `<code>${esc(x.version)}</code><span class="two">${esc(SOURCE_LABEL[x.source] || "")}${
+        x.drift ? ` · <span class="drift">recorded ${esc(x.record.version)}</span>` : ""}</span>`
+        : `<span class="muted">unknown</span>${x.probe_error ? `<span class="two">${esc(x.probe_error)}</span>` : ""}`;
+      if (g.up_to_date) what = `<span class="muted">already running it</span>`;
+      else if (!g.previous_version) what = `<span class="muted">nothing to compare</span>`;
+      else if (g.command) what = g.ok ? `${linesOf(g).length} change${linesOf(g).length === 1 ? "" : "s"}` : esc(g.error || "");
+      else if (g.url) what = `<a class="link" href="${esc(g.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 12)}compare</a>`;
+      else what = `<code>${esc(g.previous_version)}</code> → <code>${esc(v)}</code>`;
+    }
+    const t = dp.times[x.platform];
+    return `<tr><td data-label="Platform" class="name"><div>${esc(x.platform)}<span class="two">${esc(x.stop)}</span></div></td>
+      <td data-label="Live now" class="ver-cell"><div>${live}</div></td>
+      <td data-label="Changes"><div>${what}</div></td>
+      <td data-label="Departs" class="num"><div>${t ? esc(whenFull(t)) : "<span class='muted'>—</span>"}</div></td></tr>`;
+  }).join("");
+  const warn = r && r.exists ? `<div class="warnline">A departure for <code>${esc(v)}</code> already exists. Open it from the sidebar to resume it.</div>` : "";
+  const hint = r ? "" : `<div class="warnline" style="background:var(--surface-2)">Enter a version to see what each platform runs now and what it would change.</div>`;
+  const details = groups.filter((g) => g.previous_version && !g.up_to_date && (linesOf(g).length || g.url || g.error))
+    .map((g, i) => {
+      const lines = linesOf(g);
+      return `<details class="grp"${i === 0 ? " open" : ""}><summary>${esc(g.platforms.join(", "))} · <code>${esc(g.previous_version)}</code> → <code>${esc(v)}</code>${
+        g.command && g.ok ? ` · ${lines.length} change${lines.length === 1 ? "" : "s"}` : ""}</summary>
+        ${commitRows(lines.slice(0, 200))}
+        <div class="grp-foot">${g.error ? `<span class="muted">${esc(cap(g.error))}.</span> ` : ""}${g.url ? `<a class="link" href="${esc(g.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 12)}Open the full comparison</a>` : ""}</div></details>`;
+    }).join("");
+  return warn + hint + `<table class="grid"><thead><tr><th>Platform</th><th>Live now</th><th>Changes</th><th>Departs</th></tr></thead><tbody>${rows}</tbody></table>` + details;
+}
+$("dpVersion").addEventListener("input", schedulePreview);
+$("dpPrev").addEventListener("input", schedulePreview);
 
 $("departDialog").addEventListener("close", async () => {
   if ($("departDialog").returnValue !== "ok") return;

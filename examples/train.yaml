@@ -16,6 +16,9 @@ train:
   changes:
     url: "https://github.com/acme/api-service/compare/{previous_version}...{version}"
     # command: "git -C /repos/api-service log --oneline {previous_version}..{version}"
+  # Optional: ask each platform which version it runs (last line of output), so hotfixes
+  # made outside traintraintrain are noticed. Gets the platform's vars, e.g. {cluster}.
+  # live_version_command: "kubectl --context {cluster} get deploy api -o jsonpath='{{.metadata.labels.version}}'"
   inspection_interval: 2m         # how often to inspect while dwelling
   default_dwell: 30m              # how long to watch a platform after deploying
   deploy_timeout: 45m

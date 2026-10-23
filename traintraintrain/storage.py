@@ -10,6 +10,8 @@ things:
 - logs:       the output of each departure, for the UI's Log tab
 - ownership:  which process is driving a train (PID + heartbeat for files, an advisory
               lock for Postgres, which disappears the moment that process dies)
+- live:       which version is running on each platform right now, plus the history of
+              every change to it (deployed, rolled back, failed, set by hand)
 """
 from __future__ import annotations
 
@@ -73,7 +75,25 @@ class Backend:
     def read_log(self, train: str, version: str, lines: int = LOG_TAIL_LINES) -> str: raise NotImplementedError
     def log_path(self, train: str, version: str) -> Path | None: return None
 
+    # live version per platform. A record is {platform, version, previous_version, status,
+    # departure, at, by}. set_live appends it to the history and, when `current` (a successful
+    # deploy, a rollback, an observed or hand-set version), makes it the platform's live version.
+    def set_live(self, train: str, record: dict, current: bool = True, history: bool = True) -> None:
+        raise NotImplementedError
+    def live(self, train: str) -> dict[str, dict]: raise NotImplementedError
+    def live_history(self, train: str, platform: str | None = None, limit: int = 50) -> list[dict]:
+        raise NotImplementedError
+
     def describe(self) -> str: return self.kind
+
+
+LIVE_FIELDS = ("platform", "version", "previous_version", "status", "departure", "at", "by")
+
+
+def live_record(platform: str, version: str | None, status: str, previous_version: str | None = None,
+                departure: str | None = None, by: str | None = None, at: str | None = None) -> dict:
+    return {"platform": platform, "version": version, "previous_version": previous_version,
+            "status": status, "departure": departure, "at": at or _iso(_now()), "by": by}
 
 
 # ---- files ---------------------------------------------------------------------
@@ -187,13 +207,57 @@ class FileBackend(Backend):
             data = fh.read().decode(errors="replace")
         return "\n".join(data.splitlines()[-lines:])
 
+    def _live_path(self, train: str) -> Path:
+        return self.state_dir / f"{train}.live.json"
+
+    def _live_history_path(self, train: str) -> Path:
+        return self.state_dir / f"{train}.live-history.jsonl"
+
+    def set_live(self, train, record, current=True, history=True):
+        record = {k: record.get(k) for k in LIVE_FIELDS}
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            path = self._live_path(train)
+            if current and record["version"] is not None:
+                platforms = self.live(train)
+                platforms[record["platform"]] = record
+                tmp = path.with_suffix(f".tmp{threading.get_ident()}")
+                tmp.write_text(json.dumps({"train": train, "platforms": platforms}, indent=2))
+                tmp.replace(path)
+            if history:
+                with open(self._live_history_path(train), "a") as fh:
+                    fh.write(json.dumps(record) + "\n")
+
+    def live(self, train):
+        path = self._live_path(train)
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text()).get("platforms") or {}
+        except ValueError:
+            return {}
+
+    def live_history(self, train, platform=None, limit=50):
+        path = self._live_history_path(train)
+        if not path.exists():
+            return []
+        out = []
+        for line in path.read_text().splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if platform is None or e.get("platform") == platform:
+                out.append(e)
+        return out[-limit:][::-1]
+
     def describe(self):
         return f"files in {self.state_dir}"
 
 
 # ---- postgres --------------------------------------------------------------------
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # Run as one simple query; the advisory lock stops two processes racing on CREATE TABLE.
 SCHEMA = """
 SELECT pg_advisory_lock(29812, 0);
@@ -233,6 +297,29 @@ CREATE TABLE IF NOT EXISTS train_logs (
     line     text        NOT NULL
 );
 CREATE INDEX IF NOT EXISTS train_logs_departure ON train_logs (train, version, id);
+CREATE TABLE IF NOT EXISTS train_platform_versions (
+    train            text        NOT NULL,
+    platform         text        NOT NULL,
+    version          text        NOT NULL,
+    previous_version text,
+    status           text        NOT NULL,
+    departure        text,
+    updated_at       timestamptz NOT NULL DEFAULT now(),
+    updated_by       text,
+    PRIMARY KEY (train, platform)
+);
+CREATE TABLE IF NOT EXISTS train_platform_history (
+    id               bigserial   PRIMARY KEY,
+    train            text        NOT NULL,
+    platform         text        NOT NULL,
+    version          text,
+    previous_version text,
+    status           text        NOT NULL,
+    departure        text,
+    at               timestamptz NOT NULL DEFAULT now(),
+    by_user          text
+);
+CREATE INDEX IF NOT EXISTS train_platform_history_platform ON train_platform_history (train, platform, id);
 CREATE TABLE IF NOT EXISTS train_schema (version integer PRIMARY KEY);
 INSERT INTO train_schema (version) VALUES (SCHEMA_VERSION_HERE) ON CONFLICT DO NOTHING;
 SELECT pg_advisory_unlock(29812, 0);
@@ -400,6 +487,44 @@ class PostgresBackend(Backend):
                           (train, version, lines), "all")
         return "\n".join(r[0] for r in rows)
 
+    # -- live version per platform --
+    def set_live(self, train, record, current=True, history=True):
+        r = {k: record.get(k) for k in LIVE_FIELDS}
+        at = r["at"] or _iso(_now())
+        with self._lock:
+            if current and r["version"] is not None:
+                self._exec(
+                    """INSERT INTO train_platform_versions
+                         (train, platform, version, previous_version, status, departure, updated_at, updated_by)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (train, platform) DO UPDATE
+                       SET version = EXCLUDED.version, previous_version = EXCLUDED.previous_version,
+                           status = EXCLUDED.status, departure = EXCLUDED.departure,
+                           updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by""",
+                    (train, r["platform"], r["version"], r["previous_version"], r["status"],
+                     r["departure"], at, r["by"]))
+            if not history:
+                return
+            self._exec("""INSERT INTO train_platform_history
+                            (train, platform, version, previous_version, status, departure, at, by_user)
+                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                       (train, r["platform"], r["version"], r["previous_version"], r["status"],
+                        r["departure"], at, r["by"]))
+
+    def live(self, train):
+        rows = self._exec("""SELECT platform, version, previous_version, status, departure, updated_at, updated_by
+                             FROM train_platform_versions WHERE train=%s""", (train,), "all")
+        return {p: {"platform": p, "version": v, "previous_version": pv, "status": st, "departure": d,
+                    "at": _iso(at), "by": by} for p, v, pv, st, d, at, by in rows}
+
+    def live_history(self, train, platform=None, limit=50):
+        rows = self._exec("""SELECT platform, version, previous_version, status, departure, at, by_user
+                             FROM train_platform_history
+                             WHERE train=%s AND (%s::text IS NULL OR platform=%s)
+                             ORDER BY id DESC LIMIT %s""", (train, platform, platform, limit), "all")
+        return [{"platform": p, "version": v, "previous_version": pv, "status": st, "departure": d,
+                 "at": _iso(at), "by": by} for p, v, pv, st, d, at, by in rows]
+
     def close(self) -> None:
         with self._lock:
             if self._conn is not None:
@@ -410,9 +535,12 @@ class PostgresBackend(Backend):
 
     def counts(self) -> dict:
         row = self._exec("""SELECT (SELECT count(*) FROM train_departures), (SELECT count(*) FROM train_audit),
-                                   (SELECT count(*) FROM train_logs), (SELECT max(version) FROM train_schema)""",
+                                   (SELECT count(*) FROM train_logs), (SELECT count(*) FROM train_platform_versions),
+                                   (SELECT count(*) FROM train_platform_history),
+                                   (SELECT max(version) FROM train_schema)""",
                          None, "one")
-        return {"departures": row[0], "audit entries": row[1], "log lines": row[2], "schema version": row[3]}
+        return {"departures": row[0], "audit entries": row[1], "log lines": row[2],
+                "live platform versions": row[3], "live history entries": row[4], "schema version": row[5]}
 
     def describe(self):
         return _redact(self.url)

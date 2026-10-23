@@ -6,6 +6,34 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-23
+
+### Added
+- **Live version per platform**, stored with the rest of the state: in Postgres, the
+  `train_platform_versions` and `train_platform_history` tables (schema version 2, created
+  automatically); with files, `<train>.live.json` and `<train>.live-history.jsonl`. It's
+  updated on every successful deploy and rollback. Failed and aborted deploys are kept in
+  the history.
+- **Per-platform comparison and rollback.** Each platform compares the new version with the
+  version it runs and rolls back to it (`{previous_version}` is now per platform). Change
+  lists are grouped by live version (`changes.groups`), and `$DT_PLATFORMS` names each
+  group's platforms.
+- **Preview before departing.** The New departure dialog shows each platform's live
+  version and what the typed version would change there. The CLI has
+  `traintraintrain preview --version V`, and the API `GET /api/preview?version=V`.
+- `live_version_command` (and `live_version_timeout`) asks a platform what it runs, so
+  hotfixes and rollbacks made outside traintraintrain are noticed.
+- New commands: `live` (`--probe`, `--history`) and `live-set`. New API: `GET /api/live`.
+  The Timetable page has a **Live now** column and a live version history.
+- `db import` also copies live versions and their history.
+- Versions may contain `/`, for per-service monorepo tags like `payments/v1.3.0`.
+
+### Changed
+- `--previous-version` and the dialog's "Previous version" field are only used for
+  platforms with no known live version. When it's left out, the departure's rollback
+  target shown in the UI is the version most platforms ran.
+- `board` shows each platform's previous version (`FROM`) and the change list per group.
+
 ## [0.2.0] - 2026-10-23
 
 ### Added
@@ -94,7 +122,8 @@ during development; that command name and its `DEPLOYTRAIN_*` variables still wo
   `windows`, `bake`, `approval`, `plan`, `run`, …) are still accepted as aliases. State
   files written with them still load. See "Upgrading from the old names" in the README.
 
-[Unreleased]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VishnuT-Procore/traintraintrain/releases/tag/v0.1.0

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+from . import live
 from ._compat import LEGACY_STATUS
 from .config import Platform, Stop, TrainConfig
 from .notify import Notifier, build_notifier
@@ -284,6 +285,7 @@ class Train:
             self.state.event(now, "train resumed its journey")
             self._notify("train_resumed")
             return
+        resolved = live.resolve(self.cfg, self.backend, self.runner, fallback=self.previous_version)
         self.state.data = {
             "train": self.cfg.name,
             "version": self.version,
@@ -296,47 +298,63 @@ class Train:
             "finished_at": None,
             "stops": {s.name: {"finished_at": None, "signal": None} for s in self.cfg.stops},
             "platforms": {p.name: {"stop": p.stop, "status": SCHEDULED, "started_at": None,
-                                   "finished_at": None, "message": ""}
+                                   "finished_at": None, "message": "",
+                                   "from_version": resolved[p.name]["version"],
+                                   "from_source": resolved[p.name]["source"]}
                           for p in self.cfg.platforms},
             "events": [],
         }
         self._collect_changes()
+        if not self.previous_version:
+            # Nothing given: the version most platforms run now is the departure's rollback target.
+            self.previous_version = self.state.data["previous_version"] = (
+                (self.state.data.get("changes") or {}).get("previous_version") or self._most_common_base())
         self.state.event(now, f"train {self.cfg.name} departed with version {self.version}")
+        for name, r in resolved.items():
+            if r["drift"]:
+                self.state.event(now, f"live version is {r['version']}, not {r['record']['version']} as "
+                                 "recorded (changed outside traintraintrain?)", name)
+                self._record_live(name, r["version"], live.OBSERVED, r["record"]["version"])
+            elif r["probe_error"]:
+                self.state.event(now, f"couldn't read the live version: {r['probe_error']}", name)
         self._notify("train_started")
 
+    def _most_common_base(self) -> str | None:
+        bases = [p.get("from_version") for p in self.state.data["platforms"].values() if p.get("from_version")]
+        return max(bases, key=bases.count) if bases else None
+
     def _collect_changes(self) -> None:
-        """Record what's in this release (compare link and/or change list). Never fails a train."""
-        ch = self.cfg.changes
-        if ch is None:
+        """Record what's in this release for each platform, compared with what it runs now.
+
+        Never fails a train.
+        """
+        if self.cfg.changes is None:
             return
-        prev = self.previous_version
-        info: dict = {"previous_version": prev, "url": None, "command": None, "output": None,
-                      "ok": None, "error": None, "collected_at": _iso(self.clock.now())}
-        if not prev:
-            info["error"] = "no previous version given, so there is nothing to compare against"
-        else:
-            if ch.url:
-                info["url"] = ch.render(ch.url, self.cfg.name, self.version, prev)
-            if ch.command:
-                command = ch.render(ch.command, self.cfg.name, self.version, prev)
-                info["command"] = command
-                env = {"DT_TRAIN": self.cfg.name, "DT_VERSION": self.version, "DT_PREVIOUS_VERSION": prev}
-                try:
-                    res = self.runner(command, env, ch.timeout.total_seconds())
-                    info["output"] = res.output[-20000:]
-                    info["ok"] = res.returncode == 0
-                    if res.returncode != 0:
-                        info["error"] = f"changes command exited {res.returncode}"
-                except Exception as e:  # noqa: BLE001 - informational only
-                    info["ok"], info["error"] = False, f"changes command failed: {e}"
+        bases = {name: p.get("from_version") for name, p in self.state.data["platforms"].items()}
+        info = live.collect_changes(self.cfg, self.version, bases, self.runner, _iso(self.clock.now()))
         self.state.data["changes"] = info
-        if info["error"]:
-            log.warning("changes for %s: %s", self.version, info["error"])
-        else:
-            n = len([ln for ln in (info["output"] or "").splitlines() if ln.strip()])
-            log.info("changes for %s: %s%s", self.version,
-                     f"{n} line(s) from the changes command" if info["command"] else "",
-                     f" · {info['url']}" if info["url"] else "")
+        for g in info["groups"]:
+            where = ", ".join(g["platforms"])
+            if g["up_to_date"]:
+                log.info("changes for %s: %s already run it", where, self.version)
+            elif g["error"]:
+                log.warning("changes for %s: %s", where, g["error"])
+            else:
+                log.info("changes for %s since %s: %s%s", where, g["previous_version"],
+                         f"{live.change_count(g)} line(s) from the changes command" if g["command"] else "",
+                         f" · {g['url']}" if g["url"] else "")
+
+    def _record_live(self, platform: str, version: str | None, status: str,
+                     previous_version: str | None, current: bool = True) -> None:
+        """Store what a platform runs now. A storage hiccup must not fail a deploy that worked."""
+        if self.dry_run:
+            return
+        try:
+            self.backend.set_live(self.cfg.name, live.live_record(
+                platform, version, status, previous_version, departure=self.version,
+                by=os.environ.get("TRAINTRAINTRAIN_TRIGGERED_BY")), current=current)
+        except Exception as e:  # noqa: BLE001
+            log.error("[%s] couldn't record the live version %s: %s", platform, version, e)
 
     def _finish(self, status: str, message: str) -> str:
         self.state.data["status"] = status
@@ -362,18 +380,13 @@ class Train:
             seconds -= chunk
         self._check_brake()
 
+    def _rollback_target(self, platform: str) -> str | None:
+        # What this platform ran before the departure; older state only has the train-wide one.
+        p = self.state.data.get("platforms", {}).get(platform) or {}
+        return p.get("from_version") or self.previous_version
+
     def _vars(self, platform: Platform) -> dict[str, str]:
-        return {
-            "train": self.cfg.name,
-            "platform": platform.name,
-            "stop": platform.stop,
-            "version": self.version,
-            "previous_version": self.previous_version or "",
-            # Pre-rename names, so existing command templates keep working.
-            "region": platform.name,
-            "wave": platform.stop,
-            **{k: str(v) for k, v in platform.vars.items()},
-        }
+        return live.platform_vars(self.cfg, platform, self.version, self._rollback_target(platform.name))
 
     def _run(self, kind: str, template: str, platform: Platform, timeout: timedelta) -> CommandResult:
         variables = self._vars(platform)
@@ -449,6 +462,11 @@ class Train:
             return
         res = self._run("rollback", self.cfg.rollback_command, platform, platform.deploy_timeout)
         status = ROLLED_BACK if res.returncode == 0 else ROLLBACK_FAILED
+        target = self._rollback_target(platform.name)
+        if res.returncode == 0:
+            self._record_live(platform.name, target, live.ROLLED_BACK_TO, self.version, current=bool(target))
+        else:
+            self._record_live(platform.name, self.version, live.ROLLBACK_FAILED_ATTEMPT, target, current=False)
         self.state.update_platform(
             platform.name, status=status,
             message=f"{reason}; rollback {'ok' if res.returncode == 0 else 'FAILED'}")
@@ -468,6 +486,7 @@ class Train:
             self._dwell(platform)
             self.state.update_platform(name, status=SUCCEEDED, finished_at=_iso(self.clock.now()),
                                        message=f"{self.version} healthy")
+            self._record_live(name, self.version, live.DEPLOYED, self._rollback_target(name))
             self.state.event(self.clock.now(), "succeeded", name)
             self._notify("platform_succeeded", platform=name)
             return SUCCEEDED
@@ -475,6 +494,8 @@ class Train:
             st = self.state.platform(name)["status"]
             if st in (DEPLOYING, DWELLING):
                 self.state.update_platform(name, status=ABORTED, message="aborted mid-deploy")
+                self._record_live(name, self.version, live.ABORTED_ATTEMPT, self._rollback_target(name),
+                                  current=False)
             else:
                 self.state.update_platform(name, status=SCHEDULED,
                                            message="not served (train halted)")
@@ -484,6 +505,8 @@ class Train:
             self.state.update_platform(name, status=FAILED, finished_at=_iso(self.clock.now()),
                                        message=str(e), output=e.output.strip()[-2000:])
             self.state.event(self.clock.now(), f"FAILED: {e}", name)
+            self._record_live(name, self.version, live.FAILED_ATTEMPT, self._rollback_target(name),
+                              current=False)
             self._notify("platform_failed", platform=name, error=str(e), output=e.output.strip())
             if self.cfg.rollback_scope != "none":
                 self._rollback(platform, str(e))

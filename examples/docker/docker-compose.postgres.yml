@@ -27,7 +27,7 @@ services:
     build:
       context: ../..
     # Or use a published image:
-    # image: ghcr.io/vishnut-procore/traintraintrain:0.2.0
+    # image: ghcr.io/vishnut-procore/traintraintrain:0.3.0
     depends_on:
       postgres:
         condition: service_healthy
