@@ -1,12 +1,11 @@
-from datetime import timedelta
 
 import pytest
 
-from deploytrain import config
-from deploytrain.notify import Notifier, SlackNotifier, SlackSettings, build_notifier
-from deploytrain.train import FAILED, SUCCEEDED, Train
+from traintraintrain import config
+from traintraintrain.notify import Notifier, SlackNotifier, SlackSettings, build_notifier
+from traintraintrain.train import FAILED, SUCCEEDED, Train
 
-from test_deploytrain import FakeClock, FakeRunner, dt, make_cfg
+from test_traintraintrain import FakeClock, FakeRunner, dt, make_cfg
 
 
 class FakeSlack:
@@ -137,7 +136,7 @@ def test_signal_events_and_legacy_event_names(tmp_path):
 
     def clear_when_red(seconds, _orig=clock.sleep):
         if train.state.data.get("status") == "at_signal":
-            from deploytrain.train import clear_signal
+            from traintraintrain.train import clear_signal
             clear_signal(cfg, "v2", "s1", "dana")
         _orig(seconds)
 

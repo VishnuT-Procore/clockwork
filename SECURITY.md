@@ -1,6 +1,6 @@
 # Security policy
 
-deploytrain runs deployment commands against production systems and can expose a web UI
+traintraintrain runs deployment commands against production systems and can expose a web UI
 that dispatches trains and pulls their brakes, so security reports are taken seriously.
 
 ## Reporting a vulnerability
@@ -20,7 +20,7 @@ Only the latest release receives security fixes while the project is at 0.x.
 ## Deployment guidance
 
 - The web UI listens on `127.0.0.1` by default. If you expose it more widely, put it behind
-  an authenticating proxy (SSO), or at least set `DEPLOYTRAIN_UI_TOKEN`. Anyone who can
+  an authenticating proxy (SSO), or at least set `TRAINTRAINTRAIN_UI_TOKEN`. Anyone who can
   reach the UI can dispatch trains, clear signals and pull the brake.
 - Keep Slack tokens and webhook URLs in environment variables. The config file only names
   the variables (`token_env`, `webhook_url_env`).

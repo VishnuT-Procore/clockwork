@@ -8,14 +8,13 @@ windows, bake, gap, approval, ...) are still accepted as aliases.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
 import yaml
 
-from ._compat import pick
+from ._compat import LEGACY_STATE_DIR, env, pick
 from .notify import SlackSettings
 from .timetable import LineClosure, Timetable, parse_duration
 
@@ -67,6 +66,13 @@ class TrainConfig:
     @property
     def platforms(self) -> list[Platform]:
         return [p for s in self.stops for p in s.platforms]
+
+
+def _default_state_dir(base_dir: Path) -> str:
+    # Keep using a state folder created before the rename, so journeys can be resumed.
+    if not (base_dir / ".traintraintrain").exists() and (base_dir / LEGACY_STATE_DIR).is_dir():
+        return LEGACY_STATE_DIR
+    return ".traintraintrain"
 
 
 def load(path: str | Path) -> TrainConfig:
@@ -165,9 +171,9 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         estimated_deploy_duration=parse_duration(t.get("estimated_deploy_duration", "10m")),
         timetables=timetables,
         stops=stops,
-        # DEPLOYTRAIN_STATE_DIR wins, so containers can keep state on a volume while the
+        # TRAINTRAINTRAIN_STATE_DIR wins, so containers can keep state on a volume while the
         # config itself is mounted read-only.
-        state_dir=Path(os.environ.get("DEPLOYTRAIN_STATE_DIR")
-                       or base_dir / t.get("state_dir", ".deploytrain")).resolve(),
+        state_dir=Path(env("STATE_DIR") or base_dir / t.get("state_dir", _default_state_dir(base_dir)))
+        .resolve(),
         slack=slack,
     )

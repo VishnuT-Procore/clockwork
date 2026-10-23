@@ -1,5 +1,5 @@
 # Builds and smoke-tests the container image on every push and pull request, and
-# publishes ghcr.io/<owner>/deploytrain:edge (linux/amd64, linux/arm64) from main.
+# publishes ghcr.io/<owner>/traintraintrain:edge (linux/amd64, linux/arm64) from main.
 # Versioned images (:0.1.0, :0.1, :latest) are published by the Release workflow.
 name: Docker
 
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/deploytrain
+  IMAGE: ghcr.io/${{ github.repository_owner }}/traintraintrain
 
 jobs:
   image:
@@ -30,16 +30,16 @@ jobs:
         with:
           context: .
           load: true
-          tags: deploytrain:test
+          tags: traintraintrain:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: "Smoke test: CLI, non-root user, timezone data"
         run: |
           set -eux
-          docker run --rm deploytrain:test --help
-          test "$(docker run --rm --entrypoint id deploytrain:test -u)" = 10001
-          docker run --rm -v "$PWD/examples:/config:ro" deploytrain:test timetable --at 2026-10-22T12:00 \
+          docker run --rm traintraintrain:test --help
+          test "$(docker run --rm --entrypoint id traintraintrain:test -u)" = 10001
+          docker run --rm -v "$PWD/examples:/config:ro" traintraintrain:test timetable --at 2026-10-22T12:00 \
             | tee /tmp/timetable.txt
           grep -q "Thu 10-22 22:00 PDT" /tmp/timetable.txt   # America/Los_Angeles resolved
 
@@ -62,8 +62,8 @@ jobs:
               platforms: [p2, p3]
           EOF
           docker volume create ci-state
-          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state deploytrain:test depart --version v1
-          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state deploytrain:test board --version v1 \
+          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state traintraintrain:test depart --version v1
+          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state traintraintrain:test board --version v1 \
             | tee /tmp/board.txt
           grep -q "status SUCCEEDED" /tmp/board.txt
 
@@ -71,13 +71,13 @@ jobs:
         run: |
           set -eux
           sed -i 's/default_dwell: 2s/default_dwell: 120s/' /tmp/cfg/train.yaml
-          docker run -d --name ui -p 127.0.0.1:8080:8080 -e DEPLOYTRAIN_UI_TOKEN=ci \
-            -v /tmp/cfg:/config:ro -v ci-state:/state deploytrain:test
+          docker run -d --name ui -p 127.0.0.1:8080:8080 -e TRAINTRAINTRAIN_UI_TOKEN=ci \
+            -v /tmp/cfg:/config:ro -v ci-state:/state traintraintrain:test
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
-          docker exec ui python -m deploytrain.healthcheck
+          docker exec ui python -m traintraintrain.healthcheck
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/config)" = 401
           curl -fsS -H "Authorization: Bearer ci" http://127.0.0.1:8080/api/config | grep -q '"train": "ci"'
-          curl -fsS -H "Authorization: Bearer ci" -H "X-Requested-With: deploytrain" \
+          curl -fsS -H "Authorization: Bearer ci" -H "X-Requested-With: traintraintrain" \
             -H "Content-Type: application/json" -d '{"version": "v2"}' \
             http://127.0.0.1:8080/api/departures/depart
           for i in $(seq 1 30); do
@@ -85,7 +85,7 @@ jobs:
               | grep -q '"status": "dwelling"' && break; sleep 1; done
           docker stop -t 40 ui
           docker logs ui 2>&1 | tail -20
-          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state deploytrain:test board --version v2 \
+          docker run --rm -v /tmp/cfg:/config:ro -v ci-state:/state traintraintrain:test board --version v2 \
             | tee /tmp/board2.txt
           grep -q "status ABORTED" /tmp/board2.txt   # braked cleanly on shutdown; resumable
 

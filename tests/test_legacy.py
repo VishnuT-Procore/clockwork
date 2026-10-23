@@ -4,10 +4,10 @@ from datetime import timedelta
 
 import pytest
 
-from deploytrain import cli, config
-from deploytrain.train import SUCCEEDED, Train, state_path
+from traintraintrain import cli, config
+from traintraintrain.train import SUCCEEDED, Train, state_path
 
-from test_deploytrain import FakeClock, FakeRunner, dt, make_cfg
+from test_traintraintrain import FakeClock, FakeRunner, dt, make_cfg
 
 LEGACY_RAW = {
     "train": {

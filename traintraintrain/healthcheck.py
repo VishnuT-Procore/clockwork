@@ -1,13 +1,14 @@
-"""Container health check: `python -m deploytrain.healthcheck`.
+"""Container health check: `python -m traintraintrain.healthcheck`.
 
 Healthy when the web UI answers /healthz. A container running a one-off `depart` job has no
 server to probe, so it always reports healthy; the job's exit code is what matters there.
 """
 from __future__ import annotations
 
-import os
 import sys
 import urllib.request
+
+from ._compat import env
 
 
 def main() -> int:
@@ -18,7 +19,7 @@ def main() -> int:
         args = []
     if b"ui" not in args:
         return 0
-    port = os.environ.get("DEPLOYTRAIN_UI_PORT", "8080")
+    port = env("UI_PORT", "8080")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via a proxy
     try:
         with opener.open(f"http://127.0.0.1:{port}/healthz", timeout=4) as resp:

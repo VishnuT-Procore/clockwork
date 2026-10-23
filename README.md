@@ -1,4 +1,4 @@
-# deploytrain
+# traintraintrain
 
 [![CI](https://github.com/VishnuT-Procore/traintraintrain/actions/workflows/ci.yml/badge.svg)](https://github.com/VishnuT-Procore/traintraintrain/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -11,10 +11,10 @@ during its service hours, in its own timezone. After each deploy the train **dwe
 the platform while it's inspected (health checks). On failure it **rolls back** and halts.
 A **signal** can hold the train at a stop until a person clears it.
 
-deploytrain does not deploy anything itself. You supply shell commands (helm, kubectl,
-terraform, CodeDeploy, etc.), and deploytrain decides *when* and *where* to run them.
+traintraintrain does not deploy anything itself. You supply shell commands (helm, kubectl,
+terraform, CodeDeploy, etc.), and traintraintrain decides *when* and *where* to run them.
 
-![deploytrain web UI: a release on its route, one platform dwelling and one held at a signal](docs/screenshot.png)
+![traintraintrain web UI: a release on its route, one platform dwelling and one held at a signal](docs/screenshot.png)
 
 ## Vocabulary
 
@@ -56,21 +56,20 @@ Requires Python 3.10+, on Linux or macOS.
 pip install traintraintrain
 ```
 
-The PyPI package is called `traintraintrain`. It installs the `deploytrain` command and
-the `deploytrain` Python package.
+This installs the `traintraintrain` command.
 
 Or use the container image; see [Docker and Kubernetes](#docker-and-kubernetes).
 
 ## Quick start
 
 ```
-deploytrain -c examples/train.yaml timetable            # projected departure per platform
-deploytrain -c examples/train.yaml service              # upcoming service hours
-deploytrain -c examples/train.yaml depart --version v1.4.0 --previous-version v1.3.2
-deploytrain -c examples/train.yaml board --version v1.4.0
-deploytrain -c examples/train.yaml clear-signal --version v1.4.0 --stop atlantic
-deploytrain -c examples/train.yaml brake --version v1.4.0   # from another shell
-deploytrain -c examples/train.yaml ui      # web dashboard on http://127.0.0.1:8080
+traintraintrain -c examples/train.yaml timetable            # projected departure per platform
+traintraintrain -c examples/train.yaml service              # upcoming service hours
+traintraintrain -c examples/train.yaml depart --version v1.4.0 --previous-version v1.3.2
+traintraintrain -c examples/train.yaml board --version v1.4.0
+traintraintrain -c examples/train.yaml clear-signal --version v1.4.0 --stop atlantic
+traintraintrain -c examples/train.yaml brake --version v1.4.0   # from another shell
+traintraintrain -c examples/train.yaml ui      # web dashboard on http://127.0.0.1:8080
 ```
 
 ## How a journey runs
@@ -89,7 +88,7 @@ deploytrain -c examples/train.yaml ui      # web dashboard on http://127.0.0.1:8
    - `platform`: only the failed platform
    - `stop`: the failed stop
    - `train`: every platform updated on this journey
-5. State is saved to `.deploytrain/<train>-<version>.json`. Re-running the same command
+5. State is saved to `.traintraintrain/<train>-<version>.json`. Re-running the same command
    resumes from that state, and platforms that succeeded are skipped. Failed platforms
    need `--retry-failed`.
 
@@ -120,13 +119,13 @@ plus any platform `vars`. The same values are exported as env vars (`DT_PLATFORM
 A stop with `signal: true` stops the train before deploying. The train's status becomes
 `at_signal`, and Slack posts a message that links to the UI if `ui_url` is set. The
 train proceeds once someone clears the signal, either in the web UI or with
-`deploytrain clear-signal --version V --stop S`. The name of whoever cleared it is
+`traintraintrain clear-signal --version V --stop S`. The name of whoever cleared it is
 recorded. If you brake and then resume, a signal that was already cleared stays cleared.
 
 ## Web UI
 
 ```
-deploytrain -c train.yaml ui --host 127.0.0.1 --port 8080
+traintraintrain -c train.yaml ui --host 127.0.0.1 --port 8080
 ```
 
 **What you can see**
@@ -148,8 +147,8 @@ deploytrain -c train.yaml ui --host 127.0.0.1 --port 8080
 - **Retry failed platforms.**
 
 **How it works**
-- The UI only reads state files. Each train runs as a separate `deploytrain depart`
-  process, logging to `.deploytrain/<train>-<version>.log`. The UI can restart without
+- The UI only reads state files. Each train runs as a separate `traintraintrain depart`
+  process, logging to `.traintraintrain/<train>-<version>.log`. The UI can restart without
   affecting trains en route.
 - The brake and signals use the same marker files as the CLI.
 - Only one process may drive a train at a time. A train whose process died shows as
@@ -160,10 +159,10 @@ deploytrain -c train.yaml ui --host 127.0.0.1 --port 8080
 - **Shared deployments:** put the UI behind your SSO proxy (oauth2-proxy, IAP, etc.).
   The user name is taken from `X-Forwarded-User` / `X-Auth-Request-User` (or the
   matching `...-Email` headers) and recorded on every action.
-- **Shared token:** alternatively, set `DEPLOYTRAIN_UI_TOKEN` to require a token. Users
+- **Shared token:** alternatively, set `TRAINTRAINTRAIN_UI_TOKEN` to require a token. Users
   then enter a name in the header, which is self-reported.
-- Every POST must send `X-Requested-With: deploytrain` (CSRF protection).
-- Actions are appended to `.deploytrain/<train>.audit.jsonl`.
+- Every POST must send `X-Requested-With: traintraintrain` (CSRF protection).
+- Actions are appended to `.traintraintrain/<train>.audit.jsonl`.
 
 ## Slack notifications
 
@@ -174,7 +173,7 @@ notifications:
     token_env: SLACK_BOT_TOKEN      # default
     webhook_url_env: SLACK_WEBHOOK_URL  # default; used when no bot token is set
     mention_on_failure: "<!here>"   # or "<!subteam^S0123ABCD>" / "<@U0123ABCD>"
-    ui_url: https://deploytrain.example.com  # signal messages link here
+    ui_url: https://traintraintrain.example.com  # signal messages link here
     events: [...]                   # optional filter, see below
 ```
 
@@ -198,23 +197,23 @@ messages include the last part of the failing command's output, plus the
 
 **If Slack is unavailable.** A Slack error or a missing credential is logged as a warning
 and never stops a deploy.
-- `deploytrain notify-test` sends a test message so you can check the setup.
+- `traintraintrain notify-test` sends a test message so you can check the setup.
 - `depart --no-notify` turns notifications off for one journey.
 - Notifications are always off in `--dry-run`.
 
 ## Docker and Kubernetes
 
 Images are published to GitHub Container Registry for `linux/amd64` and `linux/arm64`:
-`ghcr.io/vishnut-procore/deploytrain:<version>`, plus `:edge` built from `main`.
+`ghcr.io/vishnut-procore/traintraintrain:<version>`, plus `:edge` built from `main`.
 
 ```bash
 # Web UI, with config mounted read-only and state on a volume
-docker run -p 127.0.0.1:8080:8080 -e DEPLOYTRAIN_UI_TOKEN=change-me \
-  -v ./config:/config:ro -v deploytrain-state:/state ghcr.io/vishnut-procore/deploytrain:0.1.0
+docker run -p 127.0.0.1:8080:8080 -e TRAINTRAINTRAIN_UI_TOKEN=change-me \
+  -v ./config:/config:ro -v traintraintrain-state:/state ghcr.io/vishnut-procore/traintraintrain:0.1.0
 
 # One train as a one-off job (exits 0 when it arrives, 1 if it fails or is braked)
-docker run -v ./config:/config:ro -v deploytrain-state:/state \
-  ghcr.io/vishnut-procore/deploytrain:0.1.0 depart --version v1.4.0 --previous-version v1.3.2
+docker run -v ./config:/config:ro -v traintraintrain-state:/state \
+  ghcr.io/vishnut-procore/traintraintrain:0.1.0 depart --version v1.4.0 --previous-version v1.3.2
 ```
 
 **Add your deploy tools to the image.** Your `deploy_command`, `inspection_command` and
@@ -224,14 +223,14 @@ kubectl, helm, aws, … installed;
 
 **How the image behaves**
 - **Config and state:** the config is read from `/config/train.yaml`
-  (`DEPLOYTRAIN_CONFIG`), and progress is saved under `/state` (`DEPLOYTRAIN_STATE_DIR`,
+  (`TRAINTRAINTRAIN_CONFIG`), and progress is saved under `/state` (`TRAINTRAINTRAIN_STATE_DIR`,
   which overrides the config's `state_dir`). Keep `/state` on a persistent volume.
 - **Non-root:** the image runs as user `10001`. Bind-mounted state directories must be
   writable by that user.
 - **Health check:** `/healthz` needs no token, and the image's `HEALTHCHECK` uses it.
 - **Stopping a container** (`docker stop`, a pod shutting down) is graceful. A `depart`
   job pulls its train's emergency brake. The UI brakes the trains it dispatched and waits
-  up to `DEPLOYTRAIN_SHUTDOWN_GRACE` seconds (default 20). The journey can then be
+  up to `TRAINTRAINTRAIN_SHUTDOWN_GRACE` seconds (default 20). The journey can then be
   resumed.
 - **Restarts are recoverable.** The process driving a train writes a heartbeat to the
   state file. If a container is replaced mid-journey, the train shows as *interrupted*
@@ -242,7 +241,7 @@ kubectl, helm, aws, … installed;
 **Examples**
 - [`examples/docker/docker-compose.yml`](examples/docker/docker-compose.yml): the UI
   with a persistent volume. Run it with
-  `DEPLOYTRAIN_UI_TOKEN=change-me docker compose up --build`.
+  `TRAINTRAINTRAIN_UI_TOKEN=change-me docker compose up --build`.
 - [`examples/kubernetes/ui.yaml`](examples/kubernetes/ui.yaml): the UI as a
   single-replica Deployment (`Recreate` strategy) with a PersistentVolumeClaim, probes,
   a non-root security context and a Service.
@@ -259,9 +258,9 @@ far as the current timetables allow.
 
 ## Upgrading from the old names
 
-Earlier development versions used generic terms. They are all still accepted, so
-existing configs, scripts and state files keep working. Using an old name and its new
-name together is an error.
+Earlier development versions used generic terms, and the project was called
+`deploytrain`. The old names are still accepted, so existing configs, scripts and state
+files keep working. Using an old name and its new name together is an error.
 
 | Old | New |
 |---|---|
@@ -279,6 +278,10 @@ name together is an error.
 | `{region}` / `{wave}`, `DT_REGION` / `DT_WAVE` | `{platform}` / `{stop}`, `DT_PLATFORM` / `DT_STOP` |
 | `plan`, `windows`, `run`, `status`, `approve --wave`, `abort` | `timetable`, `service`, `depart`, `board`, `clear-signal --stop`, `brake` |
 | Slack events `wave_*` / `region_*` | `stop_*`, `signal_cleared` / `platform_*` |
+| `deploytrain` command, `python -m deploytrain` | `traintraintrain` (the `deploytrain` command still works) |
+| `DEPLOYTRAIN_*` environment variables | `TRAINTRAINTRAIN_*` (old names still read; new ones win) |
+| `.deploytrain` state folder | `.traintraintrain` (an existing `.deploytrain` folder keeps being used) |
+| `import deploytrain`, image `ghcr.io/vishnut-procore/deploytrain` | `import traintraintrain`, image `ghcr.io/vishnut-procore/traintraintrain` |
 
 ## Contributing
 

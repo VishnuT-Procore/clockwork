@@ -1,23 +1,23 @@
-# deploytrain web UI on Kubernetes.
+# traintraintrain web UI on Kubernetes.
 #
 # - Exactly one replica with the Recreate strategy: two pods must never drive the same
 #   trains. State lives on a PersistentVolumeClaim.
-# - Trains dispatched from the UI run inside this pod. When the pod is stopped, deploytrain
+# - Trains dispatched from the UI run inside this pod. When the pod is stopped, traintraintrain
 #   brakes them, and they can be resumed from the UI once the new pod is up.
 # - Use an image that contains your deploy tools (see examples/docker/Dockerfile.tools),
 #   and a ServiceAccount with the RBAC your commands need.
 apiVersion: v1
 kind: Secret
 metadata:
-  name: deploytrain
+  name: traintraintrain
 stringData:
-  DEPLOYTRAIN_UI_TOKEN: change-me
+  TRAINTRAINTRAIN_UI_TOKEN: change-me
   # SLACK_BOT_TOKEN: xoxb-...
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: deploytrain-config
+  name: traintraintrain-config
 data:
   train.yaml: |
     train:
@@ -42,7 +42,7 @@ data:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: deploytrain-state
+  name: traintraintrain-state
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -52,18 +52,18 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: deploytrain
+  name: traintraintrain
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
-    matchLabels: {app: deploytrain}
+    matchLabels: {app: traintraintrain}
   template:
     metadata:
-      labels: {app: deploytrain}
+      labels: {app: traintraintrain}
     spec:
-      # serviceAccountName: deploytrain   # with the RBAC your deploy commands need
+      # serviceAccountName: traintraintrain   # with the RBAC your deploy commands need
       terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true
@@ -71,15 +71,15 @@ spec:
         runAsGroup: 10001
         fsGroup: 10001
       containers:
-        - name: deploytrain
-          image: ghcr.io/vishnut-procore/deploytrain:0.1.0   # or your image with tools
+        - name: traintraintrain
+          image: ghcr.io/vishnut-procore/traintraintrain:0.1.0   # or your image with tools
           args: ["ui"]
           ports:
             - {name: http, containerPort: 8080}
           env:
-            - {name: DEPLOYTRAIN_SHUTDOWN_GRACE, value: "35"}
+            - {name: TRAINTRAINTRAIN_SHUTDOWN_GRACE, value: "35"}
           envFrom:
-            - secretRef: {name: deploytrain}
+            - secretRef: {name: traintraintrain}
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
             - {name: state, mountPath: /state}
@@ -96,15 +96,15 @@ spec:
             limits: {memory: 512Mi}
       volumes:
         - name: config
-          configMap: {name: deploytrain-config}
+          configMap: {name: traintraintrain-config}
         - name: state
-          persistentVolumeClaim: {claimName: deploytrain-state}
+          persistentVolumeClaim: {claimName: traintraintrain-state}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: deploytrain
+  name: traintraintrain
 spec:
-  selector: {app: deploytrain}
+  selector: {app: traintraintrain}
   ports:
     - {name: http, port: 80, targetPort: http}

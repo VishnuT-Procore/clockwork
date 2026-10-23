@@ -1,30 +1,30 @@
-# Runs the deploytrain web UI with persistent state.
+# Runs the traintraintrain web UI with persistent state.
 #
 #   cd examples/docker
-#   DEPLOYTRAIN_UI_TOKEN=change-me docker compose up --build
+#   TRAINTRAINTRAIN_UI_TOKEN=change-me docker compose up --build
 #   open http://127.0.0.1:8080  (enter the token when asked)
 #
 # The example config and placeholder scripts in ../ are mounted read-only at /config.
 # For real deploys, build an image with your tools and config instead (see Dockerfile.tools).
 services:
-  deploytrain:
+  traintraintrain:
     build:
       context: ../..
     # Or use a published image:
-    # image: ghcr.io/vishnut-procore/deploytrain:0.1.0
+    # image: ghcr.io/vishnut-procore/traintraintrain:0.1.0
     ports:
       - "127.0.0.1:8080:8080"     # localhost only; put an SSO proxy in front for shared use
     environment:
-      DEPLOYTRAIN_UI_TOKEN: ${DEPLOYTRAIN_UI_TOKEN:?set DEPLOYTRAIN_UI_TOKEN}
+      TRAINTRAINTRAIN_UI_TOKEN: ${TRAINTRAINTRAIN_UI_TOKEN:?set TRAINTRAINTRAIN_UI_TOKEN}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
-      DEPLOYTRAIN_SHUTDOWN_GRACE: "25"
+      TRAINTRAINTRAIN_SHUTDOWN_GRACE: "25"
     volumes:
       - ..:/config:ro             # train.yaml + scripts/
-      - deploytrain-state:/state  # departures, logs and audit trail
-    # Trains run inside this container. On stop, deploytrain brakes them and waits up to
-    # DEPLOYTRAIN_SHUTDOWN_GRACE seconds, so give Docker a little longer than that.
+      - traintraintrain-state:/state  # departures, logs and audit trail
+    # Trains run inside this container. On stop, traintraintrain brakes them and waits up to
+    # TRAINTRAINTRAIN_SHUTDOWN_GRACE seconds, so give Docker a little longer than that.
     stop_grace_period: 30s
     restart: unless-stopped
 
 volumes:
-  deploytrain-state:
+  traintraintrain-state:

@@ -1,10 +1,10 @@
-# Example: your own image = deploytrain + the tools your commands call + your config.
+# Example: your own image = traintraintrain + the tools your commands call + your config.
 #
-#   docker build -f examples/docker/Dockerfile.tools -t my-deploytrain .
+#   docker build -f examples/docker/Dockerfile.tools -t my-traintraintrain .
 #
 # Pin tool versions and verify checksums for production use.
-ARG DEPLOYTRAIN_IMAGE=ghcr.io/vishnut-procore/deploytrain:0.1.0
-FROM ${DEPLOYTRAIN_IMAGE}
+ARG TRAINTRAINTRAIN_IMAGE=ghcr.io/vishnut-procore/traintraintrain:0.1.0
+FROM ${TRAINTRAINTRAIN_IMAGE}
 
 USER root
 ARG KUBECTL_VERSION=v1.34.1

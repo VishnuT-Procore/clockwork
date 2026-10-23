@@ -20,7 +20,7 @@ from .config import Platform, Stop, TrainConfig
 from .notify import Notifier, build_notifier
 from .timetable import NoServiceError, format_duration
 
-log = logging.getLogger("deploytrain")
+log = logging.getLogger("traintraintrain")
 
 # Platform statuses.
 SCHEDULED, HELD, DEPLOYING, DWELLING = "scheduled", "held", "deploying", "dwelling"

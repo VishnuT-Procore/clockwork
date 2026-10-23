@@ -9,7 +9,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable
 
-log = logging.getLogger("deploytrain")
+log = logging.getLogger("traintraintrain")
 
 EVENTS = (
     "train_started", "train_resumed", "train_finished",

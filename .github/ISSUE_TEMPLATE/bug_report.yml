@@ -19,12 +19,12 @@ body:
     id: output
     attributes:
       label: Output / logs
-      description: Output of `deploytrain board --version ... --events 30`, or the journey log.
+      description: Output of `traintraintrain board --version ... --events 30`, or the journey log.
       render: text
   - type: input
     id: version
     attributes:
-      label: deploytrain version, Python version and OS
-      placeholder: deploytrain 0.1.0, Python 3.12, Ubuntu 24.04
+      label: traintraintrain version, Python version and OS
+      placeholder: traintraintrain 0.1.0, Python 3.12, Ubuntu 24.04
     validations:
       required: true

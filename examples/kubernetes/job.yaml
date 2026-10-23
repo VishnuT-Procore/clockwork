@@ -11,7 +11,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: deploytrain-jobs-state
+  name: traintraintrain-jobs-state
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -21,7 +21,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: deploytrain-${VERSION}
+  name: traintraintrain-${VERSION}
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 604800   # 7 days: trains can wait for service hours
@@ -34,16 +34,16 @@ spec:
         runAsUser: 10001
         fsGroup: 10001
       containers:
-        - name: deploytrain
-          image: ghcr.io/vishnut-procore/deploytrain:0.1.0   # or your image with tools
+        - name: traintraintrain
+          image: ghcr.io/vishnut-procore/traintraintrain:0.1.0   # or your image with tools
           args: ["depart", "--version", "${VERSION}", "--previous-version", "${PREVIOUS}"]
           envFrom:
-            - secretRef: {name: deploytrain, optional: true}
+            - secretRef: {name: traintraintrain, optional: true}
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
             - {name: state, mountPath: /state}
       volumes:
         - name: config
-          configMap: {name: deploytrain-config}
+          configMap: {name: traintraintrain-config}
         - name: state
-          persistentVolumeClaim: {claimName: deploytrain-jobs-state}
+          persistentVolumeClaim: {claimName: traintraintrain-jobs-state}

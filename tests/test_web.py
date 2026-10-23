@@ -7,14 +7,14 @@ import urllib.request
 
 import pytest
 
-from deploytrain import config
-from deploytrain.notify import Notifier
-from deploytrain.train import (
+from traintraintrain import config
+from traintraintrain.notify import Notifier
+from traintraintrain.train import (
     AT_SIGNAL, SUCCEEDED, Train, clear_signal, signal_path, state_path,
 )
-from deploytrain.web import App, Server, make_handler
+from traintraintrain.web import App, Server, make_handler
 
-from test_deploytrain import FakeClock, FakeRunner, dt, make_cfg
+from test_traintraintrain import FakeClock, FakeRunner, dt, make_cfg
 
 
 # ---- signals ----------------------------------------------------------
@@ -106,7 +106,7 @@ def server(tmp_path, request):
 
 
 def call(base, path, body=None, token="s3cret", user="bob", csrf=True):
-    headers = {"X-Deploytrain-User": user}
+    headers = {"X-Traintraintrain-User": user}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     data = None
@@ -114,7 +114,7 @@ def call(base, path, body=None, token="s3cret", user="bob", csrf=True):
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
         if csrf:
-            headers["X-Requested-With"] = "deploytrain"
+            headers["X-Requested-With"] = "traintraintrain"
     req = urllib.request.Request(base + path, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -145,9 +145,18 @@ def test_auth_and_csrf(server):
     assert call(base, "/api/departures", token="wrong")[0] == 401
     assert call(base, "/api/departures") == (200, [])
     assert call(base, "/api/departures/depart", {"version": "v1"}, csrf=False)[0] == 403
+    # Pre-rename header values are still accepted.
+    legacy = urllib.request.Request(
+        base + "/api/departures/depart", data=json.dumps({"version": "../x"}).encode(),
+        headers={"Authorization": "Bearer s3cret", "Content-Type": "application/json",
+                 "X-Requested-With": "deploytrain", "X-Deploytrain-User": "old-ui"})
+    try:
+        urllib.request.urlopen(legacy, timeout=5)
+    except urllib.error.HTTPError as e:
+        assert e.code == 400  # passed the CSRF check; rejected only for the bad version
     assert call(base, "/api/departures/depart", {"version": "../etc"})[0] == 400
     with urllib.request.urlopen(base + "/") as r:
-        assert b"Deploy Train" in r.read()
+        assert b"traintraintrain" in r.read()
 
 
 def test_config_and_timetable(server):

@@ -3,9 +3,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from deploytrain import config
-from deploytrain.timetable import LineClosure, Timetable, parse_duration
-from deploytrain.train import (
+from traintraintrain import config
+from traintraintrain.timetable import LineClosure, Timetable, parse_duration
+from traintraintrain.train import (
     ABORTED, FAILED, ROLLED_BACK, SCHEDULED, SUCCEEDED, BrakeApplied, CommandResult, Train,
     brake_path, project,
 )

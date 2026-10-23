@@ -40,17 +40,18 @@ Issues = "https://github.com/VishnuT-Procore/traintraintrain/issues"
 Changelog = "https://github.com/VishnuT-Procore/traintraintrain/blob/main/CHANGELOG.md"
 
 [project.scripts]
-deploytrain = "deploytrain.cli:main"
+traintraintrain = "traintraintrain.cli:main"
+deploytrain = "traintraintrain.cli:main"  # pre-rename command name
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["deploytrain"]
+packages = ["traintraintrain"]
 
 [tool.setuptools.package-data]
-deploytrain = ["ui/*.html"]
+traintraintrain = ["ui/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

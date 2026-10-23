@@ -8,8 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.1.0] - 2026-10-22
 
-First public release, published on PyPI as `traintraintrain` (`pip install traintraintrain`).
-It installs the `deploytrain` command and Python package.
+First public release: `pip install traintraintrain`. (The project was called `deploytrain`
+during development; that command name and its `DEPLOYTRAIN_*` variables still work.)
 
 ### Added
 - **Deployment train:** each version is a train that calls at **stops** in order, serving
@@ -26,7 +26,7 @@ It installs the `deploytrain` command and Python package.
 - **Resume:** state is saved so a journey can resume after a crash or the emergency brake.
   `--retry-failed` re-runs failed platforms.
 - **Signals:** a stop with `signal: true` waits until someone clears it, in the web UI or
-  with `deploytrain clear-signal`.
+  with `traintraintrain clear-signal`.
 - **CLI commands:** `timetable`, `service`, `depart`, `board`, `clear-signal`, `brake`,
   `ui` and `notify-test`.
 - **Slack notifications:**
@@ -41,9 +41,9 @@ It installs the `deploytrain` command and Python package.
   Registry. It runs as a non-root user, keeps its state on a `/state` volume, has a
   `/healthz` health check, and shuts down gracefully on SIGTERM by braking running
   trains. There are Docker Compose and Kubernetes examples (a UI Deployment and a
-  per-release Job). Config and state paths can be set with `DEPLOYTRAIN_CONFIG` /
-  `DEPLOYTRAIN_STATE_DIR`, and the UI address with `DEPLOYTRAIN_UI_HOST` /
-  `DEPLOYTRAIN_UI_PORT`.
+  per-release Job). Config and state paths can be set with `TRAINTRAINTRAIN_CONFIG` /
+  `TRAINTRAINTRAIN_STATE_DIR`, and the UI address with `TRAINTRAINTRAIN_UI_HOST` /
+  `TRAINTRAINTRAIN_UI_PORT`.
 - **Restart-safe ownership:** the process driving a train writes a heartbeat to its state
   file. A train whose heartbeat is stale can be resumed even if its host or container is
   gone.

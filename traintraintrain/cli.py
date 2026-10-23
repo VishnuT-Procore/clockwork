@@ -1,4 +1,4 @@
-"""deploytrain CLI: timetable / service / depart / board / clear-signal / brake / ui.
+"""traintraintrain CLI: timetable / service / depart / board / clear-signal / brake / ui.
 
 The pre-rename command names (plan, windows, run, status, approve, abort) still work.
 """
@@ -8,7 +8,6 @@ import argparse
 import getpass
 import json
 import logging
-import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -16,6 +15,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from . import config as config_mod
+from ._compat import env
 from .notify import Notifier, SlackNotifier, build_notifier
 from .timetable import format_duration, parse_duration
 from .train import (
@@ -82,7 +82,7 @@ def cmd_depart(args, cfg) -> int:
     def on_sigterm(signum, frame):
         # e.g. `docker stop` or a Kubernetes pod shutting down: stop at the next checkpoint
         # so the journey can be resumed cleanly.
-        logging.getLogger("deploytrain").warning("SIGTERM received; applying the emergency brake")
+        logging.getLogger("traintraintrain").warning("SIGTERM received; applying the emergency brake")
         apply_brake(cfg, args.version, "SIGTERM")
 
     signal.signal(signal.SIGTERM, on_sigterm)
@@ -151,7 +151,7 @@ def cmd_notify_test(args, cfg) -> int:
     }))
     notifier.attach(probe)
     notifier.notify("train_finished", status="succeeded",
-                    message=f"Slack integration test from deploytrain ({cfg.name})")
+                    message=f"Slack integration test from traintraintrain ({cfg.name})")
     mode = f"bot token -> {cfg.slack.channel}" if notifier.bot_mode else "incoming webhook"
     print(f"sent test message via {mode}")
     return 0
@@ -159,11 +159,11 @@ def cmd_notify_test(args, cfg) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        prog="deploytrain",
+        prog="traintraintrain",
         description="Deployment train: roll a release out stop by stop, platform by platform, "
                     "within each platform's timetable.")
-    p.add_argument("-c", "--config", default=os.environ.get("DEPLOYTRAIN_CONFIG", "train.yaml"),
-                   help="config file (default: $DEPLOYTRAIN_CONFIG or train.yaml)")
+    p.add_argument("-c", "--config", default=env("CONFIG", "train.yaml"),
+                   help="config file (default: $TRAINTRAINTRAIN_CONFIG or train.yaml)")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
 
@@ -211,10 +211,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.set_defaults(func=cmd_clear_signal)
 
     sp = sub.add_parser("ui", help="serve the web UI")
-    sp.add_argument("--host", default=os.environ.get("DEPLOYTRAIN_UI_HOST", "127.0.0.1"),
-                    help="listen address (default: $DEPLOYTRAIN_UI_HOST or 127.0.0.1)")
-    sp.add_argument("--port", type=int, default=int(os.environ.get("DEPLOYTRAIN_UI_PORT", 8080)),
-                    help="listen port (default: $DEPLOYTRAIN_UI_PORT or 8080)")
+    sp.add_argument("--host", default=env("UI_HOST", "127.0.0.1"),
+                    help="listen address (default: $TRAINTRAINTRAIN_UI_HOST or 127.0.0.1)")
+    sp.add_argument("--port", type=int, default=int(env("UI_PORT", "8080")),
+                    help="listen port (default: $TRAINTRAINTRAIN_UI_PORT or 8080)")
     sp.set_defaults(func=cmd_ui)
 
     sp = sub.add_parser("notify-test", help="send a test Slack message")

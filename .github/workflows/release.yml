@@ -1,4 +1,4 @@
-# Releases deploytrain: PyPI package, container images and a GitHub release.
+# Releases traintraintrain: PyPI package, container images and a GitHub release.
 #
 # Start it either way:
 #   - Actions → Release → Run workflow, on main, with the version (e.g. 0.1.0). The
@@ -30,7 +30,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/deploytrain
+  IMAGE: ghcr.io/${{ github.repository_owner }}/traintraintrain
 
 jobs:
   prepare:
@@ -70,7 +70,7 @@ jobs:
             echo "::error::'$version' is not a version like 1.2.3 or 1.2.3rc1"; exit 1
           fi
           pkg=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          init=$(python3 -c "import re; print(re.search(r'__version__ = \"(.+)\"', open('deploytrain/__init__.py').read()).group(1))")
+          init=$(python3 -c "import re; print(re.search(r'__version__ = \"(.+)\"', open('traintraintrain/__init__.py').read()).group(1))")
           if [ "$pkg" != "$version" ] || [ "$init" != "$version" ]; then
             echo "::error::Version $version doesn't match pyproject.toml ($pkg) / __init__.py ($init). Bump them on main first."; exit 1
           fi
@@ -207,4 +207,4 @@ jobs:
           SHA: ${{ needs.prepare.outputs.sha }}
         run: |
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$SHA" \
-            --title "deploytrain ${TAG#v}" --generate-notes
+            --title "traintraintrain ${TAG#v}" --generate-notes

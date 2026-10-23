@@ -43,7 +43,7 @@ jobs:
                   detail = detail.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
                   print(f"::error title={name}::{detail}")
       - name: Validate example config
-        run: deploytrain -c examples/train.yaml plan
+        run: traintraintrain -c examples/train.yaml plan
 
   build:
     runs-on: ubuntu-latest
@@ -56,4 +56,4 @@ jobs:
       - run: python -m build
       - run: twine check --strict dist/*
       - name: Wheel contains the web UI
-        run: unzip -l dist/*.whl | grep -q "deploytrain/ui/index.html"
+        run: unzip -l dist/*.whl | grep -q "traintraintrain/ui/index.html"

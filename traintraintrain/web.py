@@ -1,6 +1,6 @@
 """Web UI: a small JSON API over the train state files plus a single-page dashboard.
 
-The UI never writes a train's state file. Departures are separate `deploytrain depart`
+The UI never writes a train's state file. Departures are separate `traintraintrain depart`
 processes, and actions use the same marker files the CLI uses (brake, signal). The UI
 can be restarted at any time without affecting trains en route.
 """
@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from ._compat import LEGACY_HEADER_VALUE, env
 from .config import TrainConfig
 from .timetable import NoServiceError, format_duration
 from .train import (
@@ -30,7 +31,7 @@ from .train import (
     owner_alive, project, read_state, signal_path, state_path,
 )
 
-log = logging.getLogger("deploytrain")
+log = logging.getLogger("traintraintrain")
 
 STATIC_DIR = Path(__file__).parent / "ui"
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$")
@@ -217,7 +218,7 @@ class App:
     # ---- actions -----------------------------------------------------------
 
     def _spawn(self, version: str, extra: list[str], user: str) -> None:
-        cmd = [sys.executable, "-m", "deploytrain", "-c", self.config_path, "depart",
+        cmd = [sys.executable, "-m", "traintraintrain", "-c", self.config_path, "depart",
                "--version", version, *extra]
         log_path = self._log_path(version)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,7 +228,7 @@ class App:
             proc = subprocess.Popen(
                 cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 cwd=str(Path(self.config_path).parent), start_new_session=True,
-                env={**os.environ, "DEPLOYTRAIN_TRIGGERED_BY": user})
+                env={**os.environ, "TRAINTRAINTRAIN_TRIGGERED_BY": user})
         with self._lock:
             self._children.append((proc, version))
 
@@ -306,7 +307,7 @@ class App:
 
 def make_handler(app: App):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "deploytrain"
+        server_version = "traintraintrain"
 
         def log_message(self, fmt, *args):
             log.debug("ui %s - " + fmt, self.address_string(), *args)
@@ -330,7 +331,8 @@ def make_handler(app: App):
             for h in USER_HEADERS:  # set by an authenticating proxy (oauth2-proxy, IAP, ...)
                 if self.headers.get(h):
                     return self.headers[h]
-            name = (self.headers.get("X-Deploytrain-User") or "").strip()
+            name = (self.headers.get("X-Traintraintrain-User")
+                    or self.headers.get("X-Deploytrain-User") or "").strip()
             return name[:64] if name else "anonymous"
 
         def _authorized(self) -> bool:
@@ -376,7 +378,7 @@ def make_handler(app: App):
 
         def do_POST(self):
             # Custom header + JSON body: blocks cross-site form posts (CSRF).
-            if self.headers.get("X-Requested-With") != "deploytrain":
+            if self.headers.get("X-Requested-With") not in ("traintraintrain", LEGACY_HEADER_VALUE):
                 self._json(HTTPStatus.FORBIDDEN, {"error": "missing X-Requested-With header"})
                 return
             routes = {
@@ -405,13 +407,13 @@ def make_handler(app: App):
 
 
 def serve(cfg: TrainConfig, config_path: str, host: str = "127.0.0.1", port: int = 8080) -> None:
-    token = os.environ.get("DEPLOYTRAIN_UI_TOKEN") or None
+    token = env("UI_TOKEN")
     if host not in ("127.0.0.1", "localhost", "::1") and not token:
-        log.warning("UI is listening on %s without DEPLOYTRAIN_UI_TOKEN; anyone who can reach it "
+        log.warning("UI is listening on %s without TRAINTRAINTRAIN_UI_TOKEN; anyone who can reach it "
                     "can dispatch trains and pull the brake. Put it behind an auth proxy or set a token.", host)
     app = App(cfg, config_path, token)
     httpd = Server((host, port), make_handler(app))
-    log.info("deploytrain UI for %r on http://%s:%d", cfg.name, host, port)
+    log.info("traintraintrain UI for %r on http://%s:%d", cfg.name, host, port)
 
     def on_sigterm(signum, frame):  # `docker stop`, Kubernetes pod termination
         raise KeyboardInterrupt
@@ -423,4 +425,4 @@ def serve(cfg: TrainConfig, config_path: str, host: str = "127.0.0.1", port: int
         log.info("stopping the UI")
     finally:
         httpd.server_close()
-        app.shutdown(float(os.environ.get("DEPLOYTRAIN_SHUTDOWN_GRACE", SHUTDOWN_GRACE_SECONDS)))
+        app.shutdown(float(env("SHUTDOWN_GRACE", str(SHUTDOWN_GRACE_SECONDS))))

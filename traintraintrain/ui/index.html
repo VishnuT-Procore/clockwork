@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Deploy Train</title>
+<title>traintraintrain</title>
 <style>
 :root {
   --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f6; --border: #dfe3e8; --text: #1b1f24;
@@ -181,7 +181,7 @@ dialog .check { display: flex; gap: 8px; align-items: center; font-weight: 500; 
 </head>
 <body>
 <header class="top">
-  <h1>Deploy Train <span class="train" id="trainName"></span></h1>
+  <h1>traintraintrain <span class="train" id="trainName"></span></h1>
   <span class="spacer"></span>
   <div class="user-chip" id="userChip"></div>
   <button class="btn primary" id="departBtn">New departure</button>
@@ -228,7 +228,7 @@ dialog .check { display: flex; gap: 8px; align-items: center; font-weight: 500; 
 <dialog id="tokenDialog">
   <form method="dialog">
     <h3>Access token required</h3>
-    <div class="hint">This UI is protected by <code>DEPLOYTRAIN_UI_TOKEN</code>. Ask the operator for the token.</div>
+    <div class="hint">This UI is protected by <code>TRAINTRAINTRAIN_UI_TOKEN</code>. Ask the operator for the token.</div>
     <label for="tokenInput">Token</label>
     <input type="password" id="tokenInput" autocomplete="off">
     <div class="buttons"><button class="btn primary" value="ok">Save</button></div>
@@ -261,14 +261,14 @@ let state = { config: null, departures: [], selected: null, dep: null, tab: "eve
 
 // ---- API ------------------------------------------------------------------
 async function api(path, body) {
-  const headers = { "X-Deploytrain-User": store.get("dt-user") || "" };
+  const headers = { "X-Traintraintrain-User": store.get("dt-user") || "" };
   const token = store.get("dt-token");
   if (token) headers["Authorization"] = "Bearer " + token;
   const opts = { headers };
   if (body !== undefined) {
     opts.method = "POST";
     headers["Content-Type"] = "application/json";
-    headers["X-Requested-With"] = "deploytrain";
+    headers["X-Requested-With"] = "traintraintrain";
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
@@ -589,7 +589,7 @@ async function refreshAll() {
     if (state.selected) await refreshDeparture();
     else if (!document.querySelector("dialog[open]")) await renderOverview();
   } catch (e) {
-    if (!/Authentication/.test(e.message)) toast("Can't reach the deploytrain server: " + e.message, true);
+    if (!/Authentication/.test(e.message)) toast("Can't reach the traintraintrain server: " + e.message, true);
   } finally { state.inflight = false; }
 }
 

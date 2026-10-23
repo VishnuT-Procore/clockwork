@@ -1,6 +1,6 @@
 __pycache__/
 *.egg-info/
-.deploytrain/
+.traintraintrain/
 .pytest_cache/
 dist/
 build/

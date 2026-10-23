@@ -1,13 +1,13 @@
-# Contributing to deploytrain
+# Contributing to traintraintrain
 
 Thanks for your interest! Bug reports, docs fixes and features are all welcome.
 
 ## Before you start
 
 - **Bugs:** open an issue using the bug report template. Include a redacted config and the output of
-  `deploytrain board`.
+  `traintraintrain board`.
 - **Features:** open an issue first to discuss the idea, especially for new config options.
-  deploytrain aims to stay small, dependency-light and tool-agnostic. It decides *when* and
+  traintraintrain aims to stay small, dependency-light and tool-agnostic. It decides *when* and
   *where* to run your commands, but it doesn't know about Kubernetes, AWS and so on.
 - **Security issues:** don't open a public issue. See [SECURITY.md](SECURITY.md).
 
@@ -26,8 +26,8 @@ Supported Python versions: 3.10 – 3.13. CI runs the tests on Linux for every v
 The container image is built from the `Dockerfile` at the repo root:
 
 ```bash
-docker build -t deploytrain:dev .
-docker run --rm -v "$PWD/examples:/config:ro" deploytrain:dev timetable
+docker build -t traintraintrain:dev .
+docker run --rm -v "$PWD/examples:/config:ro" traintraintrain:dev timetable
 ```
 
 `.github/workflows/docker.yml` builds the image and smoke-tests it on every push and PR.
@@ -38,19 +38,19 @@ shutdown.
 
 | Path | What it does |
 |---|---|
-| `deploytrain/timetable.py` | Timetables: service hours, timezones, line closures. Pure logic with no I/O. |
-| `deploytrain/config.py` | YAML loading and validation: `Stop`, `Platform`, `TrainConfig` |
-| `deploytrain/train.py` | The train: stops, platforms, dwell and inspection, rollback, signals, brake, state file |
-| `deploytrain/notify.py` | Slack notifications |
-| `deploytrain/web.py`, `deploytrain/ui/index.html` | Web UI: JSON API plus a single-page dashboard with no build step |
-| `deploytrain/cli.py` | Command-line interface |
-| `deploytrain/healthcheck.py` | Container `HEALTHCHECK` (probes the UI's `/healthz`) |
-| `deploytrain/_compat.py` | Pre-rename names (waves, regions, windows, …) still accepted as aliases |
+| `traintraintrain/timetable.py` | Timetables: service hours, timezones, line closures. Pure logic with no I/O. |
+| `traintraintrain/config.py` | YAML loading and validation: `Stop`, `Platform`, `TrainConfig` |
+| `traintraintrain/train.py` | The train: stops, platforms, dwell and inspection, rollback, signals, brake, state file |
+| `traintraintrain/notify.py` | Slack notifications |
+| `traintraintrain/web.py`, `traintraintrain/ui/index.html` | Web UI: JSON API plus a single-page dashboard with no build step |
+| `traintraintrain/cli.py` | Command-line interface |
+| `traintraintrain/healthcheck.py` | Container `HEALTHCHECK` (probes the UI's `/healthz`) |
+| `traintraintrain/_compat.py` | Pre-rename names (waves, regions, windows, …) still accepted as aliases |
 
 ## Guidelines
 
 - **Tests:** add a test for every behaviour change. The train tests use a fake clock and a
-  fake command runner (see `tests/test_deploytrain.py`), so they run instantly and need no
+  fake command runner (see `tests/test_traintraintrain.py`), so they run instantly and need no
   real infrastructure.
 - **Dependencies:** keep runtime dependencies minimal. Today there is one, PyYAML. The web
   UI is plain HTML/CSS/JS with no CDN, so it works on air-gapped networks.
@@ -75,7 +75,7 @@ By contributing, you agree that your contributions are licensed under the
 `.github/workflows/release.yml` publishes a release in this order:
 1. the PyPI package, using [trusted publishing](https://docs.pypi.org/trusted-publishers/),
    so no API token is stored
-2. multi-arch container images: `ghcr.io/<owner>/deploytrain:<version>`, `:<major>.<minor>`
+2. multi-arch container images: `ghcr.io/<owner>/traintraintrain:<version>`, `:<major>.<minor>`
    and `:latest`
 3. a GitHub release with generated notes, which also creates the tag
 
@@ -86,7 +86,7 @@ One-time setup:
    reviewer for it.
 
 To cut a release:
-1. Bump `version` in `pyproject.toml` and `deploytrain/__init__.py`. Move the
+1. Bump `version` in `pyproject.toml` and `traintraintrain/__init__.py`. Move the
    "Unreleased" notes in `CHANGELOG.md` under the new version. Merge to `main`, and wait
    for CI and Docker to pass.
 2. Go to **Actions → Release → Run workflow**, keep the branch on `main`, and enter the

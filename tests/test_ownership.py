@@ -7,10 +7,10 @@ from datetime import timedelta
 
 import pytest
 
-from deploytrain import train as train_mod
-from deploytrain.train import SUCCEEDED, Train, owner_alive, state_path
+from traintraintrain import train as train_mod
+from traintraintrain.train import SUCCEEDED, Train, owner_alive, state_path
 
-from test_deploytrain import FakeClock, FakeRunner, dt, make_cfg
+from test_traintraintrain import FakeClock, FakeRunner, dt, make_cfg
 
 NOW = dt("2026-10-26T14:00")
 
@@ -49,7 +49,7 @@ def write_state(cfg, **kw):
 def test_train_interrupted_by_container_restart_resumes_without_force(tmp_path):
     cfg = make_cfg(tmp_path)
     old = dt("2020-01-01T00:00").isoformat()  # long before the real clock: stale
-    write_state(cfg, pid=7, host="deploytrain-6f9c-old", heartbeat_at=old)
+    write_state(cfg, pid=7, host="traintraintrain-6f9c-old", heartbeat_at=old)
     clock = FakeClock(NOW)
     assert Train(cfg, "v2", runner=FakeRunner(clock), clock=clock).run() == SUCCEEDED
 
@@ -57,7 +57,7 @@ def test_train_interrupted_by_container_restart_resumes_without_force(tmp_path):
 def test_train_with_fresh_heartbeat_elsewhere_is_not_driven_twice(tmp_path):
     cfg = make_cfg(tmp_path)
     from datetime import datetime, timezone
-    write_state(cfg, pid=7, host="deploytrain-6f9c-new",
+    write_state(cfg, pid=7, host="traintraintrain-6f9c-new",
                 heartbeat_at=datetime.now(timezone.utc).isoformat())
     clock = FakeClock(NOW)
     with pytest.raises(RuntimeError, match="already en route"):
