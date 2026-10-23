@@ -211,11 +211,11 @@ Images are published to GitHub Container Registry for `linux/amd64` and `linux/a
 ```bash
 # Web UI, with config mounted read-only and state on a volume
 docker run -p 127.0.0.1:8080:8080 -e TRAINTRAINTRAIN_UI_TOKEN=change-me \
-  -v ./config:/config:ro -v traintraintrain-state:/state ghcr.io/vishnut-procore/traintraintrain:0.1.0
+  -v ./config:/config:ro -v traintraintrain-state:/state ghcr.io/vishnut-procore/traintraintrain:0.1.1
 
 # One train as a one-off job (exits 0 when it arrives, 1 if it fails or is braked)
 docker run -v ./config:/config:ro -v traintraintrain-state:/state \
-  ghcr.io/vishnut-procore/traintraintrain:0.1.0 depart --version v1.4.0 --previous-version v1.3.2
+  ghcr.io/vishnut-procore/traintraintrain:0.1.1 depart --version v1.4.0 --previous-version v1.3.2
 ```
 
 **Add your deploy tools to the image.** Your `deploy_command`, `inspection_command` and

@@ -1,6 +1,6 @@
 [project]
 name = "traintraintrain"
-version = "0.1.0"
+version = "0.1.1"
 description = "A deployment train for production: roll releases out stop by stop, within each platform's timetable"
 readme = "README.md"
 license = "Apache-2.0"

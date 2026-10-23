@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-23
+
+### Changed
+- **Redesigned web UI**, built to be easy to read and well organised:
+  - summary tiles for progress, current stop, what happens next, and journey time
+  - a single "needs you" callout when someone has to act (a red signal, a halted or
+    interrupted train)
+  - the route shown as a line of stations, plus one table per stop with aligned columns
+    (status, timetable open/closed, start time, duration, a plain-English note), and
+    failure output shown under the failed platform
+  - activity grouped by day, with readable messages and filters for problems and
+    inspections
+  - every status shown with an icon and a label, so colour is never the only cue; light
+    and dark themes; a stacked layout on phones
+- README: PyPI version, Python versions and downloads badges.
+
 ## [0.1.0] - 2026-10-22
 
 First public release: `pip install traintraintrain`. (The project was called `deploytrain`
@@ -51,5 +67,6 @@ during development; that command name and its `DEPLOYTRAIN_*` variables still wo
   `windows`, `bake`, `approval`, `plan`, `run`, …) are still accepted as aliases. State
   files written with them still load. See "Upgrading from the old names" in the README.
 
-[Unreleased]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/VishnuT-Procore/traintraintrain/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VishnuT-Procore/traintraintrain/releases/tag/v0.1.0

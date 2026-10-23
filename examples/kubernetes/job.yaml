@@ -35,7 +35,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: traintraintrain
-          image: ghcr.io/vishnut-procore/traintraintrain:0.1.0   # or your image with tools
+          image: ghcr.io/vishnut-procore/traintraintrain:0.1.1   # or your image with tools
           args: ["depart", "--version", "${VERSION}", "--previous-version", "${PREVIOUS}"]
           envFrom:
             - secretRef: {name: traintraintrain, optional: true}
