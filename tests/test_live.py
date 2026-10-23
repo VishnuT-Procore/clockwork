@@ -49,6 +49,16 @@ def depart(cfg, version, previous=None, fail=None, **kw):
     return status, runner
 
 
+def put_live(cfg, version, *platforms):
+    """Record platforms as running `version`, as if a departure had reached only them.
+
+    (A real partial departure fails one of two parallel platforms, and whether the other one
+    got the version first depends on thread timing.)
+    """
+    for p in platforms:
+        backend_for(cfg).set_live(cfg.name, live_record(p, version, live.DEPLOYED, departure=version))
+
+
 def live_versions(cfg):
     return {k: v["version"] for k, v in live.recorded(cfg, backend_for(cfg)).items()}
 
@@ -81,8 +91,7 @@ def test_next_departure_compares_each_platform_with_what_it_runs(tmp_path):
 def test_regions_on_different_versions_get_their_own_change_lists(tmp_path):
     cfg = cfg_with(tmp_path, train__rollback_scope="none")
     depart(cfg, "v1")
-    # v2 fails on us-east; the canary and eu-west (deployed alongside us-east) got it.
-    assert depart(cfg, "v2", fail={"deploy us-east": 1})[0] == FAILED
+    put_live(cfg, "v2", "us-canary", "eu-west")
     assert live_versions(cfg) == {"us-canary": "v2", "us-east": "v1", "eu-west": "v2"}
     status, runner = depart(cfg, "v4")
     assert status == SUCCEEDED
@@ -95,8 +104,31 @@ def test_regions_on_different_versions_get_their_own_change_lists(tmp_path):
     assert runner.envs[0]["DT_PLATFORMS"] == "us-canary,eu-west"
 
 
+def test_failed_deploy_is_history_only(tmp_path):
+    cfg = cfg_with(tmp_path, train__rollback_scope="none")
+    depart(cfg, "v1")
+    assert depart(cfg, "v2", fail={"deploy us-canary": 1})[0] == FAILED
+    assert live_versions(cfg) == {p: "v1" for p in PLATFORMS}
+    hist = backend_for(cfg).live_history(cfg.name, "us-canary")
+    assert [(h["status"], h["version"], h["previous_version"]) for h in hist] == [
+        (live.FAILED_ATTEMPT, "v2", "v1"), (live.DEPLOYED, "v1", None)]
+
+
+def sequential_cfg(tmp_path, **train):
+    """Like make_cfg's route, but one platform at a time, so failures happen in a fixed order."""
+    from traintraintrain import config
+    return config.from_dict({
+        "train": {"name": "svc", "deploy_command": "deploy {platform} {version}",
+                  "inspection_command": "inspect {platform}", "inspection_interval": "5m", "default_dwell": "15m",
+                  "rollback_command": "rollback {platform} {previous_version}", "changes": CHANGES,
+                  "state_dir": str(tmp_path / "state"), **train},
+        "stops": [{"name": "canary", "platforms": ["us-canary"]},
+                  {"name": "s1", "parallel_platforms": 1, "platforms": ["us-east", "eu-west"]}]},
+        base_dir=tmp_path)
+
+
 def test_rollback_goes_to_each_platforms_own_version(tmp_path):
-    cfg = cfg_with(tmp_path, train__rollback_scope="train")
+    cfg = sequential_cfg(tmp_path, rollback_scope="train")
     depart(cfg, "v1")
     backend_for(cfg).set_live(cfg.name, live_record("us-canary", "v0", live.SET_BY_HAND, "v1", by="ops"))
     status, runner = depart(cfg, "v2", fail={"inspect eu-west": 1})
@@ -179,21 +211,21 @@ def test_preview_and_live_in_web_ui(tmp_path, monkeypatch):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     cfg = cfg_with(tmp_path, train__rollback_scope="none")
     depart(cfg, "v1")
-    depart(cfg, "v2", fail={"deploy us-east": 1})
+    put_live(cfg, "v2", "us-canary", "eu-west")
     app = App(cfg, str(tmp_path / "train.yaml"))
     app.runner = GitRunner(FakeClock(NOW))
     pv = app.preview("v3")
     assert [(p["platform"], p["version"]) for p in pv["platforms"]] == [
         ("us-canary", "v2"), ("us-east", "v1"), ("eu-west", "v2")]
     assert [(g["previous_version"], live.change_count(g)) for g in pv["changes"]["groups"]] == [("v2", 1), ("v1", 2)]
-    assert pv["exists"] is False and app.preview("v2")["exists"] is True
+    assert pv["exists"] is False and app.preview("v1")["exists"] is True
     calls = len(app.runner.calls)
     app.preview("v3")
     assert len(app.runner.calls) == calls  # cached
     view = app.live_view()
     assert {p["platform"]: p["version"] for p in view["platforms"]} == {
         "us-canary": "v2", "us-east": "v1", "eu-west": "v2"}
-    assert view["history"][0]["status"] in (live.FAILED_ATTEMPT, live.DEPLOYED)
+    assert view["history"][0]["status"] == live.DEPLOYED
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
@@ -377,7 +409,7 @@ def test_pending_compares_the_head_branch_with_what_is_live(tmp_path, monkeypatc
     assert live.pending(cfg, backend_for(cfg), GitRunner(FakeClock(NOW))) is None  # no head set
     cfg = make_cfg(tmp_path, train__rollback_scope="none", train__changes={**CHANGES, "head": "v5"})
     depart(cfg, "v1")
-    depart(cfg, "v3", fail={"deploy us-east": 1})
+    put_live(cfg, "v3", "us-canary", "eu-west")
     result = live.pending(cfg, backend_for(cfg), GitRunner(FakeClock(NOW)))
     assert result["head"] == "v5"
     assert [(g["previous_version"], g["platforms"], live.change_count(g)) for g in result["changes"]["groups"]] == [

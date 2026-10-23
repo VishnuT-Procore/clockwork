@@ -317,13 +317,16 @@ def test_live_versions_stored_in_postgres(db_url, tmp_path):
     clock = FakeClock(NOW)
     assert Train(cfg, "v1", runner=FakeRunner(clock), clock=clock).run() == SUCCEEDED
     clock = FakeClock(NOW)
-    assert Train(cfg, "v2", runner=FakeRunner(clock, fail={"deploy us-east": 1}), clock=clock).run() == FAILED
+    assert Train(cfg, "v2", runner=FakeRunner(clock), clock=clock).run() == SUCCEEDED
+    clock = FakeClock(NOW)
+    assert Train(cfg, "v3", runner=FakeRunner(clock, fail={"deploy us-canary": 1}), clock=clock).run() == FAILED
     assert {k: v["version"] for k, v in backend.live(cfg.name).items()} == {
-        "us-canary": "v2", "us-east": "v1", "eu-west": "v2"}
+        "us-canary": "v2", "us-east": "v2", "eu-west": "v2"}
     row = backend.live(cfg.name)["us-canary"]
     assert (row["status"], row["previous_version"], row["departure"]) == (live.DEPLOYED, "v1", "v2")
-    hist = backend.live_history(cfg.name, "us-east")
-    assert [(h["status"], h["version"]) for h in hist] == [(live.FAILED_ATTEMPT, "v2"), (live.DEPLOYED, "v1")]
+    hist = backend.live_history(cfg.name, "us-canary")
+    assert [(h["status"], h["version"]) for h in hist] == [
+        (live.FAILED_ATTEMPT, "v3"), (live.DEPLOYED, "v2"), (live.DEPLOYED, "v1")]
     st = load_departure(cfg, "v2")
     assert {p["from_version"] for p in st["platforms"].values()} == {"v1"}
     backend.set_live(cfg.name, live_record("us-east", "v1.1", live.SET_BY_HAND, "v1", by="ops"))
