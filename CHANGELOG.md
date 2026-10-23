@@ -15,6 +15,11 @@ All notable changes to this project are documented here. The format follows
   it ends, with `{status}`. Their metrics are available to platform steps and to commands
   as `{steps.<name>.<metric>}`; `deploy_command` and the other commands now fill those
   in too. The UI shows them as "Departure steps".
+- **Timeouts are recorded as such:** a step whose `until` window runs out is marked *timed
+  out*, not *failed*. When that happens in `train.before` (e.g. a change request not
+  approved in time), the departure ends as **Timed out** instead of failed. Nothing is
+  deployed, `after` steps get `{status}` = `timed_out`, and resuming waits on the same
+  ticket again.
 - An example and a guide for checking Databricks before deploying: workspace
   connectivity, a job's last run, and SQL warehouse state (`examples/databricks`, and
   "Checking Databricks status" in docs/connectors.md).

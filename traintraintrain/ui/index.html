@@ -425,6 +425,7 @@ const STATUS = {
   rolled_back:     { label: "Rolled back",     tone: "serious", icon: "undo" },
   rollback_failed: { label: "Rollback failed", tone: "bad",     icon: "alert" },
   aborted:         { label: "Aborted",         tone: "neutral", icon: "stop" },
+  timed_out:       { label: "Timed out",       tone: "warn",    icon: "clock" },
   en_route:        { label: "En route",        tone: "active",  icon: "play" },
   at_signal:       { label: "At signal",       tone: "warn",    icon: "signal" },
   interrupted:     { label: "Interrupted",     tone: "warn",    icon: "alert" },
@@ -570,6 +571,7 @@ function nextUp(dep) {
   if (status === "arrived") return ["Nothing — done", "Live on all platforms"];
   if (status === "failed") return ["Fix and retry", "Failed platforms can be retried"];
   if (status === "aborted") return ["Resume when ready", "Train was braked"];
+  if (status === "timed_out") return ["Resume when ready", "A step before departing timed out; nothing was deployed"];
   if (status === "interrupted") return ["Resume the journey", "Its process stopped"];
   const dep_ = names((s) => s === "deploying"), dw = names((s) => s === "dwelling");
   if (dep_.length) return [`Deploying ${dep_.length > 1 ? dep_.length + " platforms" : dep_[0]}`, "Running the deploy command"];
@@ -597,7 +599,7 @@ function noteFor(name, p, dep) {
   if (s === "dwelling") return `Health checks running · dwell ${esc(cp ? cp.dwell : "")}`;
   if (s === "succeeded") return `<code>${esc(dep.version)}</code> is live and healthy`;
   if (s === "scheduled") {
-    if (["failed", "aborted"].includes(dep.status) || dep.interrupted) return "Not served — train stopped";
+    if (["failed", "aborted", "timed_out"].includes(dep.status) || dep.interrupted) return "Not served — train stopped";
     return "Waits for earlier stops";
   }
   return esc(cap(p.message || ""));
@@ -676,7 +678,7 @@ function renderStops(dep) {
 }
 
 // ---- per-platform pipeline steps -------------------------------------------------
-const STEP_LOOK = { passed: ["good", "check"], failed: ["bad", "x"], warned: ["warn", "alert"], running: ["active", "spin"],
+const STEP_LOOK = { passed: ["good", "check"], failed: ["bad", "x"], timed_out: ["warn", "clock"], warned: ["warn", "alert"], running: ["active", "spin"],
   pending: ["neutral", "circle"], skipped: ["neutral", "circle"], stopped: ["bad", "stop"] };
 function stepsRow(p) {
   if (!p.steps || !p.steps.length) return "";
@@ -857,7 +859,7 @@ function renderDeparture() {
   if (!dep) { main.innerHTML = `<div class="empty">Loading…</div>`; return; }
   const status = depStatus(dep);
   const enRoute = dep.active;
-  const canResume = !dep.starting && !enRoute && ["failed", "aborted", "interrupted"].includes(status);
+  const canResume = !dep.starting && !enRoute && ["failed", "aborted", "interrupted", "timed_out"].includes(status);
   const hasFailed = dep.platforms && Object.values(dep.platforms).some((p) => PROBLEM.has(p.status));
   const actions = [
     enRoute ? `<button type="button" class="btn danger" data-act="brake" ${dep.brake_applied ? "disabled" : ""}>${icon("stop", 14)}${dep.brake_applied ? "Braking…" : "Emergency brake"}</button>` : "",

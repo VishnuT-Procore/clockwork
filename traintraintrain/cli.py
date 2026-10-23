@@ -287,8 +287,8 @@ def cmd_pending(args, cfg) -> int:
     return 0
 
 
-STEP_MARK = {"passed": "ok", "failed": "FAILED", "warned": "warned", "running": "running", "pending": "-",
-             "skipped": "skipped", "stopped": "stopped"}
+STEP_MARK = {"passed": "ok", "failed": "FAILED", "timed_out": "TIMEOUT", "warned": "warned", "running": "running",
+             "pending": "-", "skipped": "skipped", "stopped": "stopped"}
 
 
 def _print_steps(st: dict) -> None:

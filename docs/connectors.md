@@ -68,7 +68,7 @@ Every call step can also take:
 | Key | Meaning |
 |---|---|
 | `expect` | rules the metrics must meet, e.g. `["error_rate < 1", "status == 'ready'"]` |
-| `until: 10m` (+ `every: 30s`) | retry until the rules pass, giving up after 10m (waiting for lag to drop, a job to finish) |
+| `until: 10m` (+ `every: 30s`) | retry until the rules pass, giving up after 10m (waiting for lag to drop, a job to finish); giving up is recorded as *timed out* |
 | `hold: 10m` (+ `every: 1m`) | the rules must keep passing for 10m (a gate during bake time) |
 | `on_fail: warn` | record a failure and carry on (default `halt`: fail the platform, roll back per `rollback_scope`, halt) |
 | `timeout: 5m` | the most one call may take (default 10m) |
@@ -129,6 +129,10 @@ train:
   platform steps. `deploy` and `dwell` aren't allowed, since they run per platform.
 - **A failing `before` step** stops the departure before anything is deployed, and the
   train shows it as failed.
+- **A `before` step that runs out of time** (its `until` window ends, e.g. no approval
+  within 4h) is recorded as **timed out** instead. The departure gets the status *Timed
+  out*, nothing is deployed, and `after` steps see `{status}` = `timed_out`. Resume it
+  once the request is approved: it waits on the same ticket again and then departs.
 - **On resume,** `before` steps that already passed aren't run again, so no second
   ticket is raised.
 - **`after` steps** run every time a departure ends, including after a failure or the

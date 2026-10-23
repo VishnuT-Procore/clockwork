@@ -39,6 +39,7 @@ STATUS_EMOJI = {
     "rolled_back": ":rewind:",
     "rollback_failed": ":rotating_light:",
     "aborted": ":octagonal_sign:",
+    "timed_out": ":hourglass:",
     "en_route": ":steam_locomotive:",
     "at_signal": ":vertical_traffic_light:",
 }
@@ -204,7 +205,8 @@ class SlackNotifier(Notifier):
             return f":rotating_light: {platform} rollback to `{prev}` FAILED{mention}"
         if event == "train_finished":
             status = ctx["status"]
-            emoji = {"succeeded": ":tada:", "failed": ":x:", "aborted": ":octagonal_sign:"}.get(status, "")
+            emoji = {"succeeded": ":tada:", "failed": ":x:", "aborted": ":octagonal_sign:",
+                     "timed_out": ":hourglass:"}.get(status, "")
             return f"{emoji} {ctx['message']}" + (mention if status == "failed" else "")
         return f"{event}: {ctx}"
 

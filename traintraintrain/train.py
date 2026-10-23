@@ -31,7 +31,9 @@ SCHEDULED, HELD, DEPLOYING, DWELLING = "scheduled", "held", "deploying", "dwelli
 SUCCEEDED, FAILED, ROLLED_BACK, ROLLBACK_FAILED, ABORTED = (
     "succeeded", "failed", "rolled_back", "rollback_failed", "aborted",
 )
-# Train statuses (also SUCCEEDED, FAILED, ABORTED).
+# Train statuses (also SUCCEEDED, FAILED, ABORTED). TIMED_OUT: a `before` step ran out of
+# time waiting (e.g. for a change approval); nothing was deployed and it can be resumed.
+TIMED_OUT = "timed_out"
 EN_ROUTE, AT_SIGNAL = "en_route", "at_signal"
 ACTIVE_STATUSES = (EN_ROUTE, AT_SIGNAL)
 # Signal states at a stop.
@@ -84,9 +86,10 @@ class BrakeApplied(Exception):
 
 
 class PlatformFailed(Exception):
-    def __init__(self, message: str, output: str = ""):
+    def __init__(self, message: str, output: str = "", step_status: str = "failed"):
         super().__init__(message)
         self.output = output
+        self.step_status = step_status  # how the failing step is recorded (failed, timed_out)
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -638,7 +641,7 @@ class Train:
                 self._step_state(platform, i, status=status, finished_at=_iso(self.clock.now()))
                 return
         except PlatformFailed as e:
-            self._step_state(platform, i, status="failed", finished_at=_iso(self.clock.now()), message=str(e))
+            self._step_state(platform, i, status=e.step_status, finished_at=_iso(self.clock.now()), message=str(e))
             raise
         except BrakeApplied:
             self._step_state(platform, i, status="stopped", finished_at=_iso(self.clock.now()))
@@ -657,18 +660,18 @@ class Train:
                              f"connector {step.connector!r}", name)
             return "skipped"
         self.state.update_platform(name, status=DEPLOYING, message=f"running step {step.name}")
-        passed, reason, result = self._attempts(
+        passed, reason, result, timed_out = self._attempts(
             step, self._context(platform, metrics), metrics, lambda **f: self._step_state(platform, i, **f),
             name, lambda msg: self.state.update_platform(name, message=msg))
-        return "passed" if passed else self._step_failed(platform, i, step, reason, result)
+        return "passed" if passed else self._step_failed(platform, i, step, reason, result, timed_out)
 
     def _attempts(self, step: Step, ctx: connectors.Context, metrics: dict, record, where: str | None,
-                  waiting) -> tuple[bool, str, connectors.StepResult]:
+                  waiting) -> tuple[bool, str, connectors.StepResult, bool]:
         """Call a step's connector until it passes, fails, or its until/hold window ends.
 
-        Returns (passed, why not, last result). `record` stores the step's progress, `where`
-        is the platform its events belong to (None: the whole train), `waiting` shows a
-        status message while `until` retries.
+        Returns (passed, why not, last result, timed out: its `until` window ran out).
+        `record` stores the step's progress, `where` is the platform its events belong to
+        (None: the whole train), `waiting` shows a status message while `until` retries.
         """
         connector = self.cfg.connectors[step.connector]
         started, attempts = self.clock.now(), 0
@@ -689,19 +692,19 @@ class Train:
             elapsed = self.clock.now() - started
             if step.hold is not None:
                 if not passed:
-                    return False, f"stopped passing after {format_duration(elapsed)}: {reason}", result
+                    return False, f"stopped passing after {format_duration(elapsed)}: {reason}", result, False
                 if elapsed >= step.hold:
-                    return True, "", result
+                    return True, "", result, False
                 self._sleep(min(step.every, step.hold - elapsed).total_seconds())
             elif not passed and step.until is not None:
                 if elapsed + step.every > step.until:
-                    return False, f"still failing after {format_duration(step.until)}: {reason}", result
+                    return False, f"timed out after {format_duration(step.until)}: {reason}", result, True
                 waiting(f"step {step.name}: waiting for {reason}")
                 self._sleep(step.every.total_seconds())
             elif not passed:
-                return False, reason, result
+                return False, reason, result, False
             else:
-                return True, "", result
+                return True, "", result, False
 
     # ---- departure steps (train.before / train.after) -----------------------
 
@@ -716,15 +719,17 @@ class Train:
             self.state.data["departure_steps"][phase][i].update(fields)
             self.state.save()
 
-    def _run_departure_steps(self, phase: str, steps: list, status: str = "") -> str | None:
-        """Run train.before or train.after once. Returns why `before` failed, else None.
+    def _run_departure_steps(self, phase: str, steps: list, status: str = "") -> tuple[str | None, bool]:
+        """Run train.before or train.after once.
+
+        Returns (why `before` stopped the departure, whether that was a timeout), or (None, False).
 
         `before` steps that already passed are kept on resume (so a change ticket isn't
         raised twice); `after` steps run every time the departure ends, and their
         failures are recorded but change nothing.
         """
         if not steps:
-            return None
+            return None, False
         records = self.state.data.setdefault("departure_steps", {})
         old = records.get(phase) or []
         if phase == "after" or [r.get("name") for r in old] != [s.name for s in steps]:
@@ -754,22 +759,26 @@ class Train:
                                      f"{connector.type_name} connector {step.connector!r}")
                     record(status="skipped", finished_at=_iso(self.clock.now()))
                     continue
-                passed, reason, _ = self._attempts(step, self._departure_context(metrics, status), metrics,
-                                                   record, None, lambda msg: None)
+                passed, reason, _, timed_out = self._attempts(step, self._departure_context(metrics, status),
+                                                              metrics, record, None, lambda msg: None)
             except BrakeApplied:
                 record(status="stopped", finished_at=_iso(self.clock.now()))
                 raise
             if passed:
                 record(status="passed", finished_at=_iso(self.clock.now()))
             elif step.on_fail == "warn" or phase == "after":
-                record(status="warned" if step.on_fail == "warn" else "failed", message=reason,
-                       finished_at=_iso(self.clock.now()))
-                self.state.event(self.clock.now(), f"{phase} step {step.name} failed"
+                what = "timed out" if timed_out else "failed"
+                record(status="warned" if step.on_fail == "warn" else ("timed_out" if timed_out else "failed"),
+                       message=reason, finished_at=_iso(self.clock.now()))
+                self.state.event(self.clock.now(), f"{phase} step {step.name} {what}"
                                  f"{', carrying on (on_fail: warn)' if phase == 'before' else ''}: {reason}")
+            elif timed_out:
+                record(status="timed_out", message=reason, finished_at=_iso(self.clock.now()))
+                return f"step {step.name} {reason}", True
             else:
                 record(status="failed", message=reason, finished_at=_iso(self.clock.now()))
-                return f"step {step.name} failed: {reason}"
-        return None
+                return f"step {step.name} failed: {reason}", False
+        return None, False
 
     def _after(self, status: str) -> None:
         if not self.cfg.after_steps:
@@ -783,13 +792,16 @@ class Train:
         except Exception as e:  # noqa: BLE001 - the departure is over; report, don't crash
             log.error("after steps failed: %s", e)
 
-    def _step_failed(self, platform: Platform, i: int, step: Step, reason: str, result) -> str:
+    def _step_failed(self, platform: Platform, i: int, step: Step, reason: str, result,
+                     timed_out: bool = False) -> str:
+        what = "timed out" if timed_out else "failed"
         if step.on_fail == "warn":
-            self.state.event(self.clock.now(), f"step {step.name} failed, carrying on (on_fail: warn): {reason}",
+            self.state.event(self.clock.now(), f"step {step.name} {what}, carrying on (on_fail: warn): {reason}",
                              platform.name)
             self._step_state(platform, i, message=reason)
             return "warned"
-        raise PlatformFailed(f"step {step.name} failed: {reason}", result.log or "")
+        message = f"step {step.name} {reason}" if timed_out else f"step {step.name} failed: {reason}"
+        raise PlatformFailed(message, result.log or "", step_status="timed_out" if timed_out else "failed")
 
     def _rollback_with_connector(self, platform: Platform) -> CommandResult:
         step = self.cfg.rollback_step
@@ -876,12 +888,17 @@ class Train:
             heartbeat = self._start_heartbeat()
             try:
                 try:
-                    why = self._run_departure_steps("before", self.cfg.before_steps)
+                    why, timed_out = self._run_departure_steps("before", self.cfg.before_steps)
                 except BrakeApplied:
                     status = self._finish(ABORTED, "emergency brake applied; re-run the same command to resume")
                 else:
-                    status = (self._finish(FAILED, f"departure stopped before the first stop: {why}")
-                              if why else self._journey())
+                    if why and timed_out:
+                        status = self._finish(TIMED_OUT, f"departure timed out before the first stop: {why}; "
+                                              "nothing was deployed, resume it to wait again")
+                    elif why:
+                        status = self._finish(FAILED, f"departure stopped before the first stop: {why}")
+                    else:
+                        status = self._journey()
                 self._after(status)
                 return status
             finally:

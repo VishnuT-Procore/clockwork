@@ -114,7 +114,8 @@ def test_until_gives_up(tmp_path):
     status, runner, _ = run(cfg, stats={"*": {"errors": 9}})
     assert status == FAILED
     st = load_departure(cfg, "v2")["platforms"]["us-canary"]
-    assert "still failing after 2m: errors < 5 (errors is 9)" in st["message"]
+    assert st["message"].startswith("step error-rate timed out after 2m: errors < 5 (errors is 9)")
+    assert st["steps"][1]["status"] == "timed_out"
     assert st["steps"][1]["attempts"] == 5  # at 0, 30s, 1m, 1m30s and 2m
 
 

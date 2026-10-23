@@ -7,7 +7,9 @@ import pytest
 
 from traintraintrain import config
 from traintraintrain.connectors import ConnectorError, Context, build
-from traintraintrain.train import ABORTED, FAILED, SUCCEEDED, CommandResult, Train, apply_brake, load_departure
+from traintraintrain.train import (
+    ABORTED, FAILED, SUCCEEDED, TIMED_OUT, CommandResult, Train, apply_brake, load_departure,
+)
 
 from test_connectors import Fake
 from test_traintraintrain import FakeClock, FakeRunner, dt
@@ -185,13 +187,34 @@ def test_before_and_after_run_once_per_departure(tmp_path):
     assert ds["before"][1]["attempts"] == 2 and ds["after"][0]["status"] == "passed"
 
 
-def test_a_failed_before_step_stops_the_departure(tmp_path):
+def test_an_approval_that_never_comes_is_recorded_as_a_timeout(tmp_path):
     cfg = make(tmp_path, before=BEFORE, after=AFTER)
+    status, runner, _ = run(cfg, replies={"open": {"key": "CHG-7"}, "approval": {"approval": "pending"}})
+    assert status == TIMED_OUT and runner.commands("deploy") == []
+    st = load_departure(cfg, "v2")
+    assert st["status"] == "timed_out"
+    approved = st["departure_steps"]["before"][1]
+    assert approved["status"] == "timed_out" and approved["attempts"] == 7  # every 10m for 1h
+    assert approved["message"] == "timed out after 1h: approval == 'approved' (approval is 'pending')"
+    assert st["events"][-2]["message"].startswith(
+        "departure timed out before the first stop: step approved timed out after 1h")
+    assert runner.commands("ticket")[-1] == "ticket close CHG-7 timed_out"
+    # Approved later: resume waits on the same ticket, then departs.
+    clock = FakeClock(NOW)
+    runner2 = Runner(clock, replies={"approval": {"approval": "approved"}})
+    assert Train(cfg, "v2", runner=runner2, clock=clock).run() == SUCCEEDED
+    assert runner2.commands("ticket")[:1] == ["ticket approval CHG-7"]
+    assert "ticket open v2" not in runner2.commands("ticket")
+
+
+def test_a_failed_before_step_stops_the_departure(tmp_path):
+    cfg = make(tmp_path, before=[BEFORE[0], {**BEFORE[1], "until": None}], after=AFTER)
     status, runner, _ = run(cfg, replies={"open": {"key": "CHG-7"}, "approval": {"approval": "declined"}})
     assert status == FAILED and runner.commands("deploy") == []
     st = load_departure(cfg, "v2")
+    assert st["departure_steps"]["before"][1]["status"] == "failed"
     assert any(e["message"].startswith("departure stopped before the first stop: step approved failed: "
-                                       "still failing after 1h") for e in st["events"])
+                                       "approval == 'approved' (approval is 'declined')") for e in st["events"])
     assert runner.commands("ticket")[-1] == "ticket close CHG-7 failed"
 
 
