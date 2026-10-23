@@ -15,6 +15,7 @@ Environment:
   GIT_REPO        a git checkout, for `resolve` (tag -> commit) and `changes` (git log)
   CHANGES_PATHS   for monorepos: limit `changes` to these folders, e.g. "services/pay libs/billing"
   FAIL_DEPLOY     "platform:version" pairs that should fail, e.g. "ap-northeast-1:v1.4.0"
+  FAKE_CLUSTER    where to keep the pretend cluster state (default .fake-cluster.json)
 """
 import json
 import os
@@ -22,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-STATE = Path(".fake-cluster.json")
+STATE = Path(os.environ.get("FAKE_CLUSTER", ".fake-cluster.json"))
 
 
 def log(msg):
