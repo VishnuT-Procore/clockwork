@@ -1,5 +1,5 @@
 [project]
-name = "deploytrain"
+name = "traintraintrain"
 version = "0.1.0"
 description = "A deployment train for production: roll releases out stop by stop, within each platform's timetable"
 readme = "README.md"

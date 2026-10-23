@@ -53,8 +53,11 @@ terraform, CodeDeploy, etc.), and deploytrain decides *when* and *where* to run 
 Requires Python 3.10+, on Linux or macOS.
 
 ```
-pip install "git+https://github.com/VishnuT-Procore/traintraintrain"
+pip install traintraintrain
 ```
+
+The PyPI package is called `traintraintrain`. It installs the `deploytrain` command and
+the `deploytrain` Python package.
 
 Or use the container image; see [Docker and Kubernetes](#docker-and-kubernetes).
 

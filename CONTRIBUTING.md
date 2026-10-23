@@ -80,7 +80,7 @@ By contributing, you agree that your contributions are licensed under the
 3. a GitHub release with generated notes, which also creates the tag
 
 One-time setup:
-1. On PyPI, add a trusted publisher for the project `deploytrain`, with this repo,
+1. On PyPI, add a trusted publisher for the project `traintraintrain`, with this repo,
    workflow `release.yml` and environment `pypi`.
 2. In the GitHub repo settings, create an environment named `pypi`. Optionally require a
    reviewer for it.

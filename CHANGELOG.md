@@ -8,7 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.1.0] - 2026-10-22
 
-First public release.
+First public release, published on PyPI as `traintraintrain` (`pip install traintraintrain`).
+It installs the `deploytrain` command and Python package.
 
 ### Added
 - **Deployment train:** each version is a train that calls at **stops** in order, serving
