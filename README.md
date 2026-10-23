@@ -2,554 +2,108 @@
 
 [![CI](https://github.com/VishnuT-Procore/traintraintrain/actions/workflows/ci.yml/badge.svg)](https://github.com/VishnuT-Procore/traintraintrain/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/traintraintrain.svg)](https://pypi.org/project/traintraintrain/)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/VishnuT-Procore/traintraintrain/blob/main/LICENSE)
 [![Python versions](https://img.shields.io/pypi/pyversions/traintraintrain.svg)](https://pypi.org/project/traintraintrain/)
 [![Downloads](https://img.shields.io/pypi/dm/traintraintrain.svg)](https://pypistats.org/packages/traintraintrain)
 
-Runs your releases like a railway. Each version is a **train** that calls at a series of
-**stops** in order: a canary first, then progressively larger groups of **platforms**
-(regions, clusters, …). Each platform keeps its own **timetable**, so deploys only start
-during its service hours, in its own timezone. After each deploy the train **dwells** at
-the platform while it's inspected (health checks). On failure it **rolls back** and halts.
-A **signal** can hold the train at a stop until a person clears it.
+> *Each version, a train*\
+> *calls at every stop on time —*\
+> *rolls back if it fails.*
 
-traintraintrain does not deploy anything itself. You supply shell commands (helm, kubectl,
-terraform, CodeDeploy, etc.), and traintraintrain decides *when* and *where* to run them.
+traintraintrain rolls a release out **stop by stop**: a canary first, then larger groups
+of regions, each only during its own service hours. You bring the deploy commands (or
+APIs); it decides *when* and *where* to run them, checks each region, and rolls back on
+failure.
 
-![traintraintrain web UI: a release on its route, one platform dwelling and one held at a signal](docs/screenshot.png)
-
-## Vocabulary
-
-| Term | Meaning |
-|---|---|
-| **train** | One version being rolled out |
-| **stop** | A step in the rollout: a group of platforms served together |
-| **platform** | One deploy target: a region, cluster, data centre, … |
-| **timetable** | When a platform may receive deploys: **service hours** in a timezone, minus **line closures** |
-| **held at signal** | The platform is waiting for its timetable to come into service |
-| **dwell** | How long the train waits at a platform after deploying, while **inspections** (health checks) run |
-| **headway** | Minimum gap between finishing one stop and starting the next |
-| **signal** | A manual gate: the stop waits until someone **clears the signal** |
-| **emergency brake** | Stop the train at its next checkpoint (resumable) |
-
-## Features
-
-- **Stops:** a canary first, then progressively larger stops, serving up to
-  `parallel_platforms` platforms at a time.
-- **Timetables per platform:** e.g. "Mon–Thu 09:00–16:00 Europe/Dublin". DST is handled,
-  service hours can cross midnight, and line closures can apply globally or to one
-  timetable (holiday freezes, launch days).
-- **Dwell and inspection:** after each deploy, the platform dwells while inspections run.
-  On failure the train rolls back (the platform, the stop or the whole train) and halts.
-- **Signals:** a stop can wait for someone to clear its signal before deploying.
-- **Knows what's live where:** every deploy and rollback is recorded per platform, so each
-  region compares with, and rolls back to, the version it really runs, and you see what a
-  version would change in every region before it departs.
-- **Resumable:** the train survives crashes and restarts. Re-run the same command to
-  continue, or retry just the failed platforms.
-- **Slack:** one live-updating message per train, with details in its thread and a
-  mention on failures.
-- **Web UI:** a departure board where you can dispatch trains, clear signals, pull the
-  brake and retry, with an audit trail of who did what.
-- **Small:** one runtime dependency (PyYAML). The UI has no build step and needs no CDN.
+![The traintraintrain web UI: a release on its route](https://raw.githubusercontent.com/VishnuT-Procore/traintraintrain/main/docs/screenshot.png)
 
 ## Install
 
-Requires Python 3.10+, on Linux or macOS.
-
+```bash
+pip install traintraintrain                          # Python 3.10+, Linux or macOS
+docker pull ghcr.io/vishnut-procore/traintraintrain:0.3.0
 ```
-pip install traintraintrain
-```
-
-This installs the `traintraintrain` command.
-
-Or use the container image; see [Docker and Kubernetes](#docker-and-kubernetes).
 
 ## Quick start
 
-```
-traintraintrain -c examples/train.yaml timetable            # projected departure per platform
-traintraintrain -c examples/train.yaml service              # upcoming service hours
-traintraintrain -c examples/train.yaml depart --version v1.4.0 --previous-version v1.3.2
-traintraintrain -c examples/train.yaml board --version v1.4.0
-traintraintrain -c examples/train.yaml clear-signal --version v1.4.0 --stop atlantic
-traintraintrain -c examples/train.yaml brake --version v1.4.0   # from another shell
-traintraintrain -c examples/train.yaml ui      # web dashboard on http://127.0.0.1:8080
+```bash
+traintraintrain -c train.yaml timetable                 # when each region would deploy
+traintraintrain -c train.yaml preview --version v1.4.0  # what v1.4.0 changes in each region
+traintraintrain -c train.yaml depart --version v1.4.0   # roll it out
+traintraintrain -c train.yaml board --version v1.4.0    # follow it
+traintraintrain -c train.yaml ui                        # web UI on http://127.0.0.1:8080
 ```
 
-## How a journey runs
+A minimal `train.yaml`:
 
-1. The train calls at stops in order. It leaves a stop only after every platform there
-   has finished dwelling. Then it waits out the next stop's `headway`, if one is set.
-2. If a stop has `signal: true`, the train waits there until someone clears the signal.
-3. At each stop, up to `parallel_platforms` platforms are served at once. Each platform:
-   - **is held at a signal** until its timetable is in service. If that's further away
-     than `max_hold`, the platform fails.
-   - **deploys** by running `deploy_command`, which is subject to `deploy_timeout`.
-   - **dwells** for `dwell`, running `inspection_command` every `inspection_interval`.
-4. On any failure the train halts and serves no new platforms. Platforms already being
-   served finish, and rollback runs according to `rollback_scope`:
-   - `none`
-   - `platform`: only the failed platform
-   - `stop`: the failed stop
-   - `train`: every platform updated on this journey
-5. State is saved to `.traintraintrain/<train>-<version>.json`. Re-running the same command
-   resumes from that state, and platforms that succeeded are skipped. Failed platforms
-   need `--retry-failed`.
+```yaml
+train:
+  name: payments-api
+  deploy_command: "helm upgrade api ./chart --kube-context {cluster} --set image.tag={version}"
+  inspection_command: "curl -fsS https://{cluster}.internal/healthz"
+  rollback_command: "helm rollback api --kube-context {cluster}"
+  default_dwell: 15m                     # watch each region this long after deploying
+timetables:
+  eu-hours:
+    timezone: Europe/Dublin
+    service_hours: [{days: mon-thu, start: "09:00", end: "16:00"}]
+stops:
+  - name: canary
+    platforms: [{name: us-west-2-canary, vars: {cluster: canary}}]
+  - name: europe
+    parallel_platforms: 2
+    platforms:
+      - {name: eu-west-1, timetable: eu-hours, vars: {cluster: euw1}}
+      - {name: eu-central-1, timetable: eu-hours, vars: {cluster: euc1}}
+```
 
-## Config
+A fuller one is in [`examples/train.yaml`](https://github.com/VishnuT-Procore/traintraintrain/blob/main/examples/train.yaml).
 
-See [`examples/train.yaml`](examples/train.yaml). `timetable`, `dwell` and
-`deploy_timeout` can be set per platform, per stop, or as train defaults
-(`default_timetable`, `default_dwell`, `deploy_timeout`). The most specific setting wins.
+## What it does
 
-| Timetable key | Meaning |
+- **Timetables and signals:** deploys start only in each region's service hours (time
+  zones, DST, holiday freezes), and a stop can wait for a person to clear it.
+  [Configuration](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/configuration.md)
+- **Checks and rollback:** after each deploy a region dwells while it's inspected. On
+  failure it rolls back (the region, the stop or the whole train) and halts.
+- **Knows what's live where:** each region's version (and commit) is recorded, so it
+  compares with, and rolls back to, what it really runs.
+  [Versions and changes](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/releases.md)
+- **What's in a release:** every change, before departing and after, plus what's on
+  `main` but not yet in production.
+- **Steps, checks and connectors:** per-region pipelines that query Postgres,
+  Prometheus, Databricks or any HTTP API, with rules like `error_rate < 1`.
+  [Connectors](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/connectors.md)
+- **Drivers:** one program of yours performs every step through a JSON contract.
+  [Driver contract](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/driver-contract.md)
+- **Web UI and Slack:** dispatch, clear signals, pull the brake, retry, and get one
+  live-updating Slack message per train.
+  [Web UI and Slack](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/web-ui-and-slack.md)
+- **Resumable, with files or Postgres:** survives crashes and restarts.
+  [Storage](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/storage.md)
+- **Runs anywhere:** a CLI, a container image, Kubernetes or a CI job.
+  [Running it](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/deployment.md)
+
+## Docs
+
+| Page | Covers |
 |---|---|
-| `timezone` | IANA zone for the service hours, e.g. `Europe/Dublin`. DST is handled. |
-| `service_hours[].days` | `mon-thu`, `[mon, wed]`, `fri-mon` (wraps around) or `all` |
-| `service_hours[].start/end` | `"HH:MM"` local time. If `end <= start`, service runs past midnight. |
-| `min_remaining` | Don't start a deploy unless at least this much service time is left |
-| `line_closures` | `{start, end, reason, timezone?}`. A date-only `end` is inclusive. |
-
-Global `train.line_closures`, such as a holiday freeze, apply to every timetable. A
-timetable without `service_hours` is always in service. The built-in timetable `always`
-is also available.
-
-Commands are templates using `{train} {platform} {stop} {version} {previous_version}`
-plus any platform `vars`. The same values are exported as env vars (`DT_PLATFORM`,
-`DT_STOP`, `DT_CLUSTER`, …). Escape literal braces as `{{ }}`.
-
-## Signals
-
-A stop with `signal: true` stops the train before deploying. The train's status becomes
-`at_signal`, and Slack posts a message that links to the UI if `ui_url` is set. The
-train proceeds once someone clears the signal, either in the web UI or with
-`traintraintrain clear-signal --version V --stop S`. The name of whoever cleared it is
-recorded. If you brake and then resume, a signal that was already cleared stays cleared.
-
-## Web UI
-
-```
-traintraintrain -c train.yaml ui --host 127.0.0.1 --port 8080
-```
-
-**What you can see**
-- **Departures**, showing each train's status and progress.
-- **Route view.** Each platform shows its status and any failure output. It also shows
-  whether its timetable is in service, or when service resumes in the platform's own
-  timezone.
-- **Events**, with routine inspections hidden unless you ask for them.
-- **Live log** of the journey.
-- **"Who did what"**, an audit trail of actions taken in the UI.
-- **Timetable**, showing each platform's service right now and projected departures for a
-  train leaving now.
-
-**What you can do**
-- **New departure**, with a dry-run option and a preview of the timetable.
-- **Clear a signal.**
-- **Pull the emergency brake.**
-- **Resume** an interrupted or braked journey.
-- **Retry failed platforms.**
-
-**How it works**
-- The UI only reads state files. Each train runs as a separate `traintraintrain depart`
-  process, logging to `.traintraintrain/<train>-<version>.log`. The UI can restart without
-  affecting trains en route.
-- The brake and signals use the same marker files as the CLI.
-- Only one process may drive a train at a time. A train whose process died shows as
-  *interrupted*, and you can resume it.
-
-**Access and auth**
-- By default the UI listens only on localhost.
-- **Shared deployments:** put the UI behind your SSO proxy (oauth2-proxy, IAP, etc.).
-  The user name is taken from `X-Forwarded-User` / `X-Auth-Request-User` (or the
-  matching `...-Email` headers) and recorded on every action.
-- **Shared token:** alternatively, set `TRAINTRAINTRAIN_UI_TOKEN` to require a token. Users
-  then enter a name in the header, which is self-reported.
-- Every POST must send `X-Requested-With: traintraintrain` (CSRF protection).
-- Actions are appended to `.traintraintrain/<train>.audit.jsonl`.
-
-## Slack notifications
-
-```yaml
-notifications:
-  slack:
-    channel: "#deploys"             # bot mode needs a channel plus $SLACK_BOT_TOKEN
-    token_env: SLACK_BOT_TOKEN      # default
-    webhook_url_env: SLACK_WEBHOOK_URL  # default; used when no bot token is set
-    mention_on_failure: "<!here>"   # or "<!subteam^S0123ABCD>" / "<@U0123ABCD>"
-    ui_url: https://traintraintrain.example.com  # signal messages link here
-    events: [...]                   # optional filter, see below
-```
-
-**Bot mode (recommended).** Create a Slack app with the `chat:write` scope, install it,
-invite it to the channel and export `SLACK_BOT_TOKEN`.
-- Each train gets **one message in the channel**. It is edited live with a per-stop
-  status board, e.g. `canary ✅ us-west-2 · atlantic 🚦 eu-west-1 🚀 us-east-1`.
-- Every event is posted as a **reply in that message's thread**.
-- Failures, red signals and the final result are also broadcast to the channel.
-- If you resume the train, updates go to the same thread.
-
-**Webhook mode.** Export `SLACK_WEBHOOK_URL` (an incoming webhook). Each event is posted as
-its own message.
-
-The available events are `train_started`, `train_resumed`, `train_finished`,
-`stop_started`, `stop_completed`, `stop_at_signal`, `signal_cleared`, `platform_held`,
-`platform_deploying`, `platform_succeeded`, `platform_failed` and
-`platform_rolled_back`. All are sent by default except `platform_deploying`. Failure
-messages include the last part of the failing command's output, plus the
-`mention_on_failure` mention.
-
-**If Slack is unavailable.** A Slack error or a missing credential is logged as a warning
-and never stops a deploy.
-- `traintraintrain notify-test` sends a test message so you can check the setup.
-- `depart --no-notify` turns notifications off for one journey.
-- Notifications are always off in `--dry-run`.
-
-## What's in this release
-
-Tell the train how to find the changes between the version it's deploying and the one
-each platform runs now (see [Live versions](#live-versions-per-platform)):
-
-```yaml
-train:
-  changes:
-    url: "https://github.com/acme/payments-api/compare/{previous_version}...{version}"
-    command: "git -C /repos/payments-api log --oneline {previous_version}..{version}"
-```
-
-- **`url`:** a compare link, shown as **"What's in this release"** on the departure page,
-  in the New departure dialog as you type the version, and in the Slack departure
-  message. Any `http(s)` URL works: GitHub, GitLab, Bitbucket, your own changelog.
-- **`command`:** runs once when a train departs. Its output is saved with the departure
-  and listed in the UI's **Changes** tab; `git log --oneline` lines show the short hash
-  and message.
-- **CLI:** `traintraintrain board --version V --changes` prints the same list.
-
-Both use `{version}`, `{previous_version}` and `{train}`. They run once per distinct live
-version: if the canary is already on `v1.3.0` and the other regions are on `v1.2.0`, you
-get two lists, each naming its platforms (`$DT_PLATFORMS` holds them for the command).
-A platform with no known version has nothing to compare against. The command is
-informational only: if it fails, the error is recorded and the deploy carries on. It
-also runs for dry runs and previews, so keep it read-only.
-
-**Not in production yet.** Name the branch with the newest code and traintraintrain shows,
-at any time, what's on it that production doesn't run, per platform:
-
-```yaml
-train:
-  changes:
-    command: "git -C /repos/payments fetch -q && git -C /repos/payments log --oneline {previous_version}..{version}"
-    head: origin/main
-```
-
-It's the first section of the UI's Timetable page, with changes that only reach some
-platforms marked, and `traintraintrain pending --changes` prints it. It's the same
-comparison as a departure preview, with the branch in place of the version, so it works
-with `track_versions_by: sha` too (the branch is resolved to its current commit).
-
-**Monorepos:** limit the command to the folders the service is built from, so commits to
-other services are left out:
-
-```yaml
-    command: "git -C /repos/mono log --oneline {previous_version}..{version} -- services/payments libs/billing"
-```
-
-Versions may contain `/`, so per-service tags such as `payments/v1.3.0` work as they are.
-
-## Live versions per platform
-
-traintraintrain records which version each platform runs, in the same storage as
-everything else (the `train_platform_versions` and `train_platform_history` tables in
-Postgres). It's updated when a platform's deploy succeeds or a rollback completes; failed
-and aborted deploys go into the history only.
-
-When a train departs, each platform:
-
-- **compares** the new version with what it runs, so a region that's behind gets the
-  longer change list
-- **rolls back** to what it ran, through `{previous_version}` in `rollback_command`
-
-`--previous-version` (the dialog's optional field) is now only used for platforms with no
-known version, such as the very first departure. If you leave it out, the departure's
-rollback target shown in the UI is the version most platforms ran.
-
-**Before departing**, the New departure dialog shows each platform's live version and what
-the typed version would change there. The CLI does the same:
-
-```console
-$ traintraintrain preview --version v1.4.0 --changes
-  STOP         PLATFORM           LIVE NOW         CHANGES
-  canary       us-west-2-canary   v1.3.0           2 change(s)
-  atlantic     us-east-1          v1.3.0           2 change(s)
-  worldwide    ap-northeast-1     v1.2.0           6 change(s)
-  ...
-```
-
-**Ask the platform itself.** Deploys made outside traintraintrain (a hotfix, a rollback in
-Argo CD) aren't recorded. Set `live_version_command` and the platform is asked first; it
-gets the platform's `vars` and prints the version as its last line:
-
-```yaml
-train:
-  live_version_command: >-
-    kubectl --context {cluster} -n payments get deploy api
-    -o jsonpath='{{.spec.template.spec.containers[0].image}}' | sed 's/.*://'
-  live_version_timeout: 30s
-```
-
-If the answer differs from the record, the departure logs it and records the observed
-version. If the command fails, the recorded version is used.
-
-### Track versions by tag or by commit SHA
-
-Choose per train what identifies a version:
-
-```yaml
-train:
-  track_versions_by: sha          # default: tag
-  resolve_command: "git -C /repos/payments rev-parse {version}^{{commit}}"
-```
-
-| | `tag` (default) | `sha` |
-|---|---|---|
-| Stored per platform | the version you deploy, plus its commit if `resolve_command` is set | the version and its commit |
-| Change lists compare | version names (`v1.2.0..v1.3.0`) | commits, so they stay right if a tag is moved or re-pointed |
-| Same commit under a new tag | a new version to deploy and compare | "already running it" |
-
-- **`resolve_command`** turns a version into a commit SHA (its last line of output). It
-  gets `{version}` and `{train}`; write `{{ }}` for literal braces, as in `^{{commit}}`.
-  Without git on the machine, ask your forge, e.g. the GitHub API's
-  `/repos/OWNER/REPO/commits/{version}`.
-- **Deploying commit SHAs already?** Set `track_versions_by: sha` and leave out
-  `resolve_command`: each version is its own SHA.
-- In `sha` mode, the changes `url` and `command` get the commits as `{previous_version}` and
-  `{version}`; the names are in `$DT_VERSION_NAME` and `$DT_PREVIOUS_VERSION_NAME`.
-- Deploy, inspection and rollback commands can use `{sha}` and `{previous_sha}` in either
-  mode.
-- If a version can't be resolved, the departure says so and carries on, comparing by name.
-
-SHAs are stored in the `sha` and `previous_sha` columns of both live tables, and shown
-next to versions in the UI and in `live`, `preview` and `board`.
-
-**Other commands:**
-
-```bash
-traintraintrain live                     # what each platform runs (--probe to ask them)
-traintraintrain live --history           # every deploy, rollback and failure, newest first
-traintraintrain live-set --platform us-east-1 --version v1.3.1   # record a hand-made change (--sha to give its commit)
-```
-
-The UI's Timetable page shows a **Live now** column and the same history. Existing
-installs need nothing: until a platform has a record, its version is worked out from past
-departures. With Postgres, the new tables are created automatically, or by `db migrate`.
-
-## Steps, checks and connectors
-
-Every platform runs `deploy`, then `dwell`, unless you give it **steps**. Steps can check
-a database, call your deploy API, wait, read Prometheus or Databricks, or run a script.
-**`expect`** rules on the numbers they return decide whether the train carries on. The
-systems are declared once as **connectors**, with secrets taken from env vars:
-
-```yaml
-connectors:
-  payments-db: {type: postgres, url: "${PAYMENTS_DB_URL}"}
-  prometheus:  {type: prometheus, url: https://prometheus.internal}
-  deployer:    {type: http, base_url: https://deployer.internal/api, headers: {Authorization: "Bearer ${DEPLOYER_TOKEN}"}}
-
-train:
-  steps:
-    - name: db-ready
-      use: payments-db
-      query: "select pending_migrations, replication_lag_s from deploy_status where region = :platform"
-      expect: ["pending_migrations == 0", "replication_lag_s < 30"]
-    - name: deploy
-      use: deployer
-      request: {method: POST, path: "/deploy/{platform}", json: {version: "{version}"}}
-    - wait: 2m
-    - name: error-rate
-      use: prometheus
-      query: 'sum(rate(http_errors{region="{platform}"}[5m])) / sum(rate(http_requests{region="{platform}"}[5m])) * 100'
-      as: error_rate
-      expect: ["error_rate < 1"]
-      until: 10m                     # retry every 30s until it passes, for up to 10m
-    - dwell
-```
-
-- **Built-in connector types:** `http`, `postgres` (read-only, bind parameters),
-  `prometheus`, `databricks` (SQL warehouse queries and Jobs runs), `driver` and
-  `command`. More can be added as plugins.
-- **Pipelines per stop or platform:** a stop or platform can set its own `steps:`.
-- **Checking over time:** `until` waits for the rules to pass; `hold` requires them to
-  keep passing.
-- **Soft checks:** `on_fail: warn` records a failure and carries on.
-- **What you see:** the UI shows each platform's steps with their numbers and which rules
-  passed. `traintraintrain connectors test <name>` tries a step's call without deploying.
-
-The full guide is in [docs/connectors.md](docs/connectors.md), including how to write a
-connector plugin.
-
-## Plugging in your deploy system: a driver
-
-Each step can be a shell command (`deploy_command`, `inspection_command`, …), or one
-program of yours, the **driver**, can perform them all through a documented JSON contract:
-
-```yaml
-train:
-  driver:
-    command: "python3 ./deployer.py"
-```
-
-For every step, traintraintrain sends the driver one JSON request on stdin and reads one
-JSON reply from stdout. The driver's stderr is kept as the step's log:
-
-```json
-→ {"contract": 1, "action": "deploy", "platform": "us-east-1", "vars": {"cluster": "use1"},
-   "version": "v1.4.0", "sha": "2339111f…", "previous_version": "v1.3.0", ...}
-← {"ok": true, "message": "rollout complete in 94s"}
-```
-
-- **Actions:** `deploy`, `inspect`, `rollback`, `live_version` (what a platform runs),
-  `resolve` (version → commit) and `changes` (what's between two versions, as
-  `{id, title, url, author}` items).
-- **Any language, no shell:** versions are never pasted into a command line.
-- **Migrate gradually:** a step with its own `*_command` keeps using it.
-- **Check it:** `traintraintrain contract test --action deploy` sends a real request
-  (with `dry_run: true`) and checks the reply. `contract schema` prints the JSON Schema.
-
-The full contract is in [docs/driver-contract.md](docs/driver-contract.md), and a complete
-example driver is in [examples/driver](examples/driver).
-
-## Storage: files or Postgres
-
-By default, each train's state, its log, the audit trail and brake/signal requests are
-kept as files in `state_dir` (`.traintraintrain/` next to the config, or `/state` in the
-container). That needs nothing extra and suits a single machine or container.
-
-To keep everything in **Postgres** instead, install the driver and give it a connection URL:
-
-```bash
-pip install "traintraintrain[postgres]"     # the Docker image already includes it
-export TRAINTRAINTRAIN_DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/traintraintrain"
-traintraintrain -c train.yaml db migrate    # creates the tables (also done automatically)
-```
-
-Keep the URL in an environment variable or secret, not in `train.yaml`. Any libpq URL works,
-e.g. add `?sslmode=require` for TLS.
-
-| | Files | Postgres |
-|---|---|---|
-| Setup | none | a database and a URL |
-| Who is driving a train | PID + heartbeat in the state file | an advisory lock, released the moment that process dies |
-| UI and Jobs sharing state | need a shared volume | just share the URL |
-| Logs and audit trail | files in `state_dir` | `train_logs` and `train_audit` tables |
-| Querying history | read JSON files | SQL (`train_departures.data` is JSONB) |
-
-**Moving existing state into Postgres:**
-1. Set `TRAINTRAINTRAIN_DATABASE_URL`.
-2. Run `traintraintrain -c train.yaml db import`. Add `--from DIR` for another state folder,
-   or `--overwrite` to replace departures already in the database.
-3. Run `traintraintrain -c train.yaml db status` to see which storage is in use and how
-   much it holds.
-
-The tables are `train_departures`, `train_requests`, `train_audit`, `train_logs` and
-`train_schema`, created in the connection's default schema.
-
-## Docker and Kubernetes
-
-Images are published to GitHub Container Registry for `linux/amd64` and `linux/arm64`:
-`ghcr.io/vishnut-procore/traintraintrain:<version>`, plus `:edge` built from `main`.
-
-```bash
-# Web UI, with config mounted read-only and state on a volume
-docker run -p 127.0.0.1:8080:8080 -e TRAINTRAINTRAIN_UI_TOKEN=change-me \
-  -v ./config:/config:ro -v traintraintrain-state:/state ghcr.io/vishnut-procore/traintraintrain:0.3.0
-
-# One train as a one-off job (exits 0 when it arrives, 1 if it fails or is braked)
-docker run -v ./config:/config:ro -v traintraintrain-state:/state \
-  ghcr.io/vishnut-procore/traintraintrain:0.3.0 depart --version v1.4.0 --previous-version v1.3.2
-```
-
-**Add your deploy tools to the image.** Your `deploy_command`, `inspection_command` and
-`rollback_command` run inside the container. Build your own image `FROM` this one with
-kubectl, helm, aws, … installed;
-[`examples/docker/Dockerfile.tools`](examples/docker/Dockerfile.tools) shows how.
-
-**How the image behaves**
-- **Config and state:** the config is read from `/config/train.yaml`
-  (`TRAINTRAINTRAIN_CONFIG`), and progress is saved under `/state` (`TRAINTRAINTRAIN_STATE_DIR`,
-  which overrides the config's `state_dir`). Keep `/state` on a persistent volume.
-- **Non-root:** the image runs as user `10001`. Bind-mounted state directories must be
-  writable by that user.
-- **Health check:** `/healthz` needs no token, and the image's `HEALTHCHECK` uses it.
-- **Stopping a container** (`docker stop`, a pod shutting down) is graceful. A `depart`
-  job pulls its train's emergency brake. The UI brakes the trains it dispatched and waits
-  up to `TRAINTRAINTRAIN_SHUTDOWN_GRACE` seconds (default 20). The journey can then be
-  resumed.
-- **Restarts are recoverable.** The process driving a train writes a heartbeat to the
-  state file. If a container is replaced mid-journey, the train shows as *interrupted*
-  once its heartbeat is 90 seconds old, and you can resume it with no `--force`.
-- **Run one UI instance per state directory.** Two instances could drive the same train
-  twice.
-
-**Examples**
-- [`examples/docker/docker-compose.yml`](examples/docker/docker-compose.yml): the UI
-  with a persistent volume. Run it with
-  `TRAINTRAINTRAIN_UI_TOKEN=change-me docker compose up --build`.
-- [`examples/docker/docker-compose.postgres.yml`](examples/docker/docker-compose.postgres.yml):
-  the UI with its state in a Postgres container. To use your own Postgres, drop that
-  service and set `TRAINTRAINTRAIN_DATABASE_URL`.
-- [`examples/kubernetes/ui.yaml`](examples/kubernetes/ui.yaml): the UI as a
-  single-replica Deployment (`Recreate` strategy) with a PersistentVolumeClaim, probes,
-  a non-root security context and a Service.
-- [`examples/kubernetes/job.yaml`](examples/kubernetes/job.yaml): one train per release
-  as a Kubernetes Job, for CD pipelines.
-
-## Running it in CI
-
-A train can take days to complete its journey while it waits for service hours, so run
-it as a long-lived job, such as a Kubernetes Job (see above) or a self-hosted runner,
-with `state_dir` on persistent storage. Alternatively, run it on a schedule (cron or a
-scheduled pipeline) with a short `max_hold`. Each invocation then resumes and travels as
-far as the current timetables allow.
-
-## Upgrading from the old names
-
-Earlier development versions used generic terms, and the project was called
-`deploytrain`. The old names are still accepted, so existing configs, scripts and state
-files keep working. Using an old name and its new name together is an error.
-
-| Old | New |
-|---|---|
-| `waves:` / `regions:` | `stops:` / `platforms:` |
-| `windows:` (profiles) / `windows:` (inside a profile) | `timetables:` / `service_hours:` |
-| `window:` / `default_window` | `timetable:` / `default_timetable` |
-| `blackouts` | `line_closures` |
-| `bake` / `default_bake` | `dwell` / `default_dwell` |
-| `gap` | `headway` |
-| `max_parallel` | `parallel_platforms` |
-| `approval: true` | `signal: true` |
-| `health_check_command` / `health_check_interval` | `inspection_command` / `inspection_interval` |
-| `window_wait_timeout` | `max_hold` |
-| `rollback_scope: region / wave` | `rollback_scope: platform / stop` |
-| `{region}` / `{wave}`, `DT_REGION` / `DT_WAVE` | `{platform}` / `{stop}`, `DT_PLATFORM` / `DT_STOP` |
-| `plan`, `windows`, `run`, `status`, `approve --wave`, `abort` | `timetable`, `service`, `depart`, `board`, `clear-signal --stop`, `brake` |
-| Slack events `wave_*` / `region_*` | `stop_*`, `signal_cleared` / `platform_*` |
-| `deploytrain` command, `python -m deploytrain` | `traintraintrain` (the `deploytrain` command still works) |
-| `DEPLOYTRAIN_*` environment variables | `TRAINTRAINTRAIN_*` (old names still read; new ones win) |
-| `.deploytrain` state folder | `.traintraintrain` (an existing `.deploytrain` folder keeps being used) |
-| `import deploytrain`, image `ghcr.io/vishnut-procore/deploytrain` | `import traintraintrain`, image `ghcr.io/vishnut-procore/traintraintrain` |
-
-## Contributing
-
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-development setup, and our [Code of Conduct](CODE_OF_CONDUCT.md). To report a security
-issue, please follow [SECURITY.md](SECURITY.md) rather than opening a public issue.
-
-```
-pip install -e ".[dev]" && python -m pytest
-```
-
-## License
-
-[Apache License 2.0](LICENSE). Copyright 2026 Vishnuvardhan.
+| [Configuration](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/configuration.md) | vocabulary, how a journey runs, timetables, signals, old names |
+| [Versions and changes](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/releases.md) | live versions, tag or SHA tracking, change lists, "not in production yet" |
+| [Connectors](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/connectors.md) | steps, `expect` rules, http/postgres/prometheus/databricks, plugins |
+| [Driver contract](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/driver-contract.md) | one program for every step: JSON in, JSON out |
+| [Web UI and Slack](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/web-ui-and-slack.md) | the departure board, auth, Slack messages |
+| [Storage](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/storage.md) | files or Postgres, `db migrate` / `import` |
+| [Running it](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/deployment.md) | Docker, Compose, Kubernetes, CI |
+| [Changelog](https://github.com/VishnuT-Procore/traintraintrain/blob/main/CHANGELOG.md) | what changed in each release |
+
+## Contributing and license
+
+Issues and pull requests are welcome: see
+[CONTRIBUTING.md](https://github.com/VishnuT-Procore/traintraintrain/blob/main/CONTRIBUTING.md)
+(`pip install -e ".[dev]" && python -m pytest`), the
+[Code of Conduct](https://github.com/VishnuT-Procore/traintraintrain/blob/main/CODE_OF_CONDUCT.md),
+and [SECURITY.md](https://github.com/VishnuT-Procore/traintraintrain/blob/main/SECURITY.md)
+for reporting security issues privately.
+[Apache License 2.0](https://github.com/VishnuT-Procore/traintraintrain/blob/main/LICENSE).
+Copyright 2026 Vishnuvardhan.
