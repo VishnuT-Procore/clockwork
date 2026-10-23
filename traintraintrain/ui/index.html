@@ -5,208 +5,307 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>traintraintrain</title>
 <style>
+/* ---- tokens ---------------------------------------------------------------- */
 :root {
-  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f6; --border: #dfe3e8; --text: #1b1f24;
-  --muted: #5f6b7a; --accent: #2563eb; --accent-text: #ffffff;
-  --gray: #8a94a3; --amber: #b7791f; --blue: #2563eb; --violet: #7c3aed; --green: #15803d;
-  --red: #c62828; --orange: #c2410c;
-  --gray-bg: #eef0f3; --amber-bg: #fdf3e1; --blue-bg: #e6eefc; --violet-bg: #f0e9fd;
-  --green-bg: #e5f4ea; --red-bg: #fbe7e7; --orange-bg: #fdece3;
-  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f1f3f6; --surface-3: #e9ecf0;
+  --border: #e1e4e9; --border-strong: #cdd2d9;
+  --ink: #15181c; --ink-2: #464f5c; --ink-3: #66707d;
+  --accent: #2459d6; --accent-ink: #ffffff; --focus: #2459d6;
+  /* status (icon/mark colours; text always stays in ink) */
+  --good: #0f8a0f; --warn: #c98a00; --serious: #d9652f; --bad: #d03b3b;
+  --active: #2459d6; --neutral: #8a929e;
+  --good-bg: #e8f5e8; --warn-bg: #fdf4dc; --serious-bg: #fcebe2; --bad-bg: #fbe7e7;
+  --active-bg: #e7eefc; --neutral-bg: #eef0f3;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .06);
+  --radius: 10px;
   color-scheme: light;
 }
+:root[data-theme="dark"] { color-scheme: dark; }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1216; --panel: #171b21; --panel-2: #1e232b; --border: #2b313b; --text: #e6e9ee;
-    --muted: #97a1af; --accent: #4f8cff; --accent-text: #0b0d10;
-    --gray: #8a94a3; --amber: #f0b44c; --blue: #6aa1ff; --violet: #a98bfa; --green: #4ccb7a;
-    --red: #ff6b6b; --orange: #fb923c;
-    --gray-bg: #232830; --amber-bg: #3a2e16; --blue-bg: #1a2a47; --violet-bg: #2a2145;
-    --green-bg: #15301f; --red-bg: #3d1c1c; --orange-bg: #3b2414;
+  :root:not([data-theme="light"]) {
+    --bg: #111316; --surface: #191c20; --surface-2: #20242a; --surface-3: #282d34;
+    --border: #2b3037; --border-strong: #3a4049;
+    --ink: #e9ebee; --ink-2: #b6bcc5; --ink-3: #8f97a2;
+    --accent: #6b9dff; --accent-ink: #0c0e11; --focus: #8db4ff;
+    --good: #3fbf55; --warn: #f0b429; --serious: #f08c5a; --bad: #f06b6b;
+    --active: #6b9dff; --neutral: #8a929e;
+    --good-bg: #16301d; --warn-bg: #352a10; --serious-bg: #3a2216; --bad-bg: #3b1c1c;
+    --active-bg: #1b2b4a; --neutral-bg: #24282e;
     --shadow: none;
     color-scheme: dark;
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text);
-  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 button, input { font: inherit; color: inherit; }
-code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
-a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; }
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--ink-3); }
+.small { font-size: 13px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-header.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
-  background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
-header.top h1 { font-size: 16px; margin: 0; font-weight: 650; }
-header.top .train { color: var(--muted); font-weight: 500; }
-header.top .spacer { flex: 1; }
-.user-chip { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
-.user-chip input { width: 130px; padding: 4px 8px; border: 1px solid var(--border);
-  border-radius: 6px; background: var(--panel-2); }
+/* ---- shell -------------------------------------------------------------- */
+.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 14px;
+  padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand .logo { width: 28px; height: 28px; border-radius: 7px; background: var(--ink); color: var(--surface);
+  display: grid; place-items: center; flex: 0 0 auto; }
+.brand .name { font-weight: 700; letter-spacing: -.01em; }
+.brand .train { color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar .spacer { flex: 1; }
+.who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); }
+.who input { width: 130px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
 
-.btn { border: 1px solid var(--border); background: var(--panel); padding: 6px 12px; border-radius: 7px;
-  cursor: pointer; font-weight: 550; white-space: nowrap; }
-.btn:hover { background: var(--panel-2); }
-.btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-.btn.primary:hover { filter: brightness(1.08); }
-.btn.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
-.btn.danger:hover { background: var(--red-bg); }
-.btn.warn { background: var(--amber); border-color: var(--amber); color: #fff; }
+.layout { display: grid; grid-template-columns: 272px minmax(0, 1fr); min-height: calc(100vh - 53px);
+  background: linear-gradient(to right, var(--surface) 271px, var(--border) 271px 272px, transparent 272px); }
+.sidebar { padding: 14px 12px;
+  position: sticky; top: 53px; height: calc(100vh - 53px); overflow-y: auto; }
+.main { padding: 22px 28px 48px; min-width: 0; max-width: 1240px; }
+.main:focus { outline: none; }
 
-.layout { display: grid; grid-template-columns: 290px 1fr; min-height: calc(100vh - 53px); }
-aside { border-right: 1px solid var(--border); background: var(--panel); padding: 12px; overflow-y: auto;
-  height: calc(100vh - 53px); position: sticky; top: 53px; }
-aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
-  margin: 14px 6px 6px; }
-.nav-item { display: block; width: 100%; text-align: left; border: 1px solid transparent; background: none;
-  padding: 8px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 2px; }
-.nav-item:hover { background: var(--panel-2); }
-.nav-item.active { background: var(--panel-2); border-color: var(--border); }
-.nav-item .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.nav-item .ver { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nav-item .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
-.progress { height: 4px; border-radius: 2px; background: var(--gray-bg); margin-top: 6px; overflow: hidden;
-  display: flex; }
-.progress span { display: block; height: 100%; }
-.empty { color: var(--muted); padding: 8px 10px; font-size: 13px; }
+.btn { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); background: var(--surface);
+  padding: 7px 13px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap; }
+.btn:hover { background: var(--surface-2); }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+.btn.danger:hover { background: var(--bad-bg); }
+.btn.warn { background: var(--warn); border-color: var(--warn); color: #1d1600; }
 
-main { padding: 18px 22px 40px; min-width: 0; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
-.dep-head { padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
-.dep-head .title { font-size: 20px; font-weight: 700; }
-.dep-head .meta { color: var(--muted); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
-.dep-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+/* ---- sidebar ------------------------------------------------------------- */
+.nav-label { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-3); margin: 18px 8px 6px; }
+.nav-item { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent;
+  border-radius: 9px; padding: 9px 10px; cursor: pointer; margin-bottom: 2px; }
+.nav-item:hover { background: var(--surface-2); }
+.nav-item[aria-current="page"] { background: var(--surface-2); border-color: var(--border); }
+.nav-item .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nav-item .ver { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-item .sub { font-size: 12.5px; color: var(--ink-3); margin-top: 6px; }
+.nav-item .meter { margin-top: 7px; }
+.nav-empty { color: var(--ink-3); font-size: 13px; padding: 4px 10px 8px; }
 
-.pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
-  font-size: 12px; font-weight: 600; white-space: nowrap; }
-.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.pill.pulse::before { animation: pulse 1.4s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: .25; } }
-.s-scheduled, .s-aborted { color: var(--gray); background: var(--gray-bg); }
-.s-held, .s-at_signal, .s-interrupted { color: var(--amber); background: var(--amber-bg); }
-.s-deploying, .s-en_route, .s-starting { color: var(--blue); background: var(--blue-bg); }
-.s-dwelling { color: var(--violet); background: var(--violet-bg); }
-.s-succeeded { color: var(--green); background: var(--green-bg); }
-.s-failed, .s-rollback_failed { color: var(--red); background: var(--red-bg); }
-.s-rolled_back { color: var(--orange); background: var(--orange-bg); }
-.bar-succeeded { background: var(--green); } .bar-failed, .bar-rollback_failed { background: var(--red); }
-.bar-rolled_back { background: var(--orange); } .bar-deploying { background: var(--blue); }
-.bar-dwelling { background: var(--violet); } .bar-held { background: var(--amber); }
+/* ---- status chip + icons ------------------------------------------------- */
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 2px 7px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 600; color: var(--ink); white-space: nowrap; background: var(--neutral-bg); }
+.chip svg { flex: 0 0 auto; }
+.t-good { --tone: var(--good); --tone-bg: var(--good-bg); }
+.t-warn { --tone: var(--warn); --tone-bg: var(--warn-bg); }
+.t-serious { --tone: var(--serious); --tone-bg: var(--serious-bg); }
+.t-bad { --tone: var(--bad); --tone-bg: var(--bad-bg); }
+.t-active { --tone: var(--active); --tone-bg: var(--active-bg); }
+.t-neutral { --tone: var(--neutral); --tone-bg: var(--neutral-bg); }
+.chip[class*="t-"] { background: var(--tone-bg); }
+.ico { color: var(--tone, var(--ink-3)); }
+.spin { animation: spin 1.1s linear infinite; transform-origin: 50% 50%; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 
-.banner { margin-top: 14px; padding: 12px 14px; border-radius: 10px; display: flex; gap: 12px;
-  align-items: center; flex-wrap: wrap; border: 1px solid; }
-.banner .grow { flex: 1; min-width: 200px; }
-.banner.amber { background: var(--amber-bg); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
-.banner.red { background: var(--red-bg); border-color: color-mix(in srgb, var(--red) 35%, transparent); }
-.banner.blue { background: var(--blue-bg); border-color: color-mix(in srgb, var(--blue) 35%, transparent); }
+/* ---- meter (stacked progress) ------------------------------------------- */
+.meter { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; background: var(--surface-3); }
+.meter.lg { height: 10px; }
+.meter span { display: block; height: 100%; border-radius: 2px; }
+.m-good { background: var(--good); } .m-serious { background: var(--serious); } .m-bad { background: var(--bad); }
+.m-active { background: var(--active); } .m-warn { background: var(--warn); } .m-neutral { background: var(--neutral); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 
-.section-title { font-size: 13px; font-weight: 650; margin: 22px 0 10px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .05em; }
-.pipeline { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; align-items: stretch; }
-.stop { flex: 1 0 240px; max-width: 360px; display: flex; flex-direction: column; gap: 8px; }
-.stop-head { display: flex; align-items: center; gap: 8px; padding: 0 2px; min-height: 26px; }
-.stop-head .name { font-weight: 650; }
-.stop-head .tags { color: var(--muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
-.tag { border: 1px solid var(--border); border-radius: 5px; padding: 0 5px; font-size: 11.5px; }
-.arrow { align-self: center; color: var(--muted); font-size: 18px; flex: 0 0 auto; padding-top: 26px; }
-.platform { padding: 10px 12px; border-left: 3px solid var(--border); }
-.platform.st-succeeded { border-left-color: var(--green); } .platform.st-failed,
-.platform.st-rollback_failed { border-left-color: var(--red); } .platform.st-rolled_back { border-left-color: var(--orange); }
-.platform.st-deploying { border-left-color: var(--blue); } .platform.st-dwelling { border-left-color: var(--violet); }
-.platform.st-held { border-left-color: var(--amber); }
-.platform .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.platform .name { font-weight: 600; overflow-wrap: anywhere; }
-.platform .msg { color: var(--muted); font-size: 12.5px; margin-top: 5px; overflow-wrap: anywhere; }
-.platform .svc { font-size: 12px; margin-top: 6px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
-.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
-.dot.open { background: var(--green); } .dot.closed { background: var(--gray); }
+/* ---- page header, callout, tiles --------------------------------------- */
+.page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.page-head h1 { font-size: 26px; line-height: 1.2; margin: 0; letter-spacing: -.02em; }
+.page-head .meta { color: var(--ink-3); font-size: 13.5px; display: flex; flex-wrap: wrap; gap: 4px 16px; width: 100%; }
+.page-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-top: 24px; }
-.tab { border: none; background: none; padding: 8px 12px; cursor: pointer; color: var(--muted);
-  border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 550; }
-.tab.active { color: var(--text); border-bottom-color: var(--accent); }
-.tabpanel { padding-top: 12px; }
-.events { list-style: none; margin: 0; padding: 0; }
-.events li { display: grid; grid-template-columns: 150px 1fr; gap: 10px; padding: 6px 4px;
-  border-bottom: 1px solid var(--border); font-size: 13px; }
-.events li:last-child { border-bottom: none; }
-.events .t { color: var(--muted); font-size: 12px; }
-.events .r { font-weight: 600; margin-right: 6px; }
-.events .bad { color: var(--red); }
-.platform pre.out { margin: 8px 0 0; padding: 6px 8px; font-size: 11.5px; background: var(--red-bg);
-  border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto; }
-.tabs .filter { margin-left: auto; align-self: center; font-size: 12.5px; color: var(--muted);
-  display: flex; gap: 6px; align-items: center; }
-pre.log { background: #0d1117; color: #d6dde6; padding: 12px 14px; border-radius: 10px; overflow: auto;
-  max-height: 480px; margin: 0; white-space: pre-wrap; word-break: break-word; }
+.callout { display: flex; align-items: flex-start; gap: 12px; margin-top: 18px; padding: 14px 16px;
+  border-radius: var(--radius); border: 1px solid color-mix(in srgb, var(--tone) 40%, var(--border));
+  background: var(--tone-bg); }
+.callout .body { flex: 1; min-width: 220px; }
+.callout .title { font-weight: 700; }
+.callout .text { color: var(--ink-2); font-size: 14px; margin-top: 2px; }
+.callout .btn { align-self: center; }
 
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-tr:last-child td { border-bottom: none; }
-.table-wrap { overflow-x: auto; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;
+  box-shadow: var(--shadow); min-width: 0; }
+.tile .label { font-size: 12px; font-weight: 700; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
+.tile .value { font-size: 22px; font-weight: 700; margin-top: 4px; letter-spacing: -.01em; line-height: 1.25;
+  overflow-wrap: anywhere; }
+.tile .value .of { font-size: 15px; font-weight: 600; color: var(--ink-3); }
+.tile .sub { font-size: 13px; color: var(--ink-3); margin-top: 4px; }
 
-dialog { border: 1px solid var(--border); border-radius: 12px; padding: 0; background: var(--panel);
-  color: var(--text); width: min(560px, calc(100vw - 32px)); box-shadow: 0 20px 50px rgba(0,0,0,.25); }
-dialog::backdrop { background: rgba(10,14,20,.45); }
-dialog form { padding: 18px 20px; }
-dialog h3 { margin: 0 0 12px; font-size: 17px; }
-dialog label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
-dialog input[type=text], dialog input[type=password] { width: 100%; padding: 8px 10px;
-  border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); }
-dialog .hint { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
-dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-dialog .check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
-.tt-preview { margin-top: 14px; max-height: 220px; overflow: auto; border: 1px solid var(--border);
-  border-radius: 8px; }
+/* ---- route stepper ------------------------------------------------------ */
+.section-title { display: flex; align-items: baseline; gap: 10px; font-size: 13px; font-weight: 700; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: .06em; margin: 30px 0 12px; }
+.route { display: flex; align-items: flex-start; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 18px 14px; box-shadow: var(--shadow); overflow-x: auto; }
+.station { flex: 1 1 0; min-width: 120px; position: relative; text-align: center; background: none; border: 0;
+  padding: 0 6px; cursor: pointer; color: inherit; }
+.station::before { content: ""; position: absolute; top: 15px; left: calc(-50% + 18px); right: calc(50% + 18px);
+  height: 3px; border-radius: 2px; background: var(--surface-3); }
+.station:first-child::before { display: none; }
+.station.reached::before { background: var(--good); }
+.station .node { width: 32px; height: 32px; border-radius: 50%; margin: 0 auto; display: grid; place-items: center;
+  background: var(--tone-bg); border: 2px solid var(--tone); position: relative; }
+.station .sname { font-weight: 650; margin-top: 8px; overflow-wrap: anywhere; }
+.station .sdesc { font-size: 12.5px; color: var(--ink-3); }
+.station:hover .sname { text-decoration: underline; }
 
-#toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 20; }
-.toast { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--accent);
-  padding: 10px 14px; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); max-width: 380px; }
-.toast.error { border-left-color: var(--red); }
+/* ---- stop cards + platform tables -------------------------------------- */
+.stop { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+  margin-top: 14px; overflow: hidden; scroll-margin-top: 70px; }
+.stop-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px;
+  border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.stop-head .idx { width: 24px; height: 24px; border-radius: 50%; background: var(--surface); border: 1px solid var(--border-strong);
+  display: grid; place-items: center; font-size: 12.5px; font-weight: 700; color: var(--ink-2); }
+.stop-head h3 { margin: 0; font-size: 16px; }
+.stop-head .facts { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.fact { font-size: 12.5px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 1px 8px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
 
-@media (max-width: 820px) {
+table.grid { width: 100%; border-collapse: collapse; font-size: 14px; }
+table.grid.fixed { table-layout: fixed; }
+table.grid.fixed td { overflow-wrap: anywhere; }
+table.grid.fixed td.name { white-space: normal; }
+table.grid td.nowrap { white-space: nowrap; overflow-wrap: normal; }
+table.grid th { text-align: left; font-size: 12px; font-weight: 700; color: var(--ink-3); text-transform: uppercase;
+  letter-spacing: .05em; padding: 9px 16px; border-bottom: 1px solid var(--border); background: var(--surface); white-space: nowrap; }
+table.grid td { padding: 11px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.grid tr:last-child td { border-bottom: none; }
+table.grid td.name { font-weight: 650; white-space: nowrap; }
+table.grid .two { display: block; font-size: 12.5px; color: var(--ink-3); margin-top: 2px; }
+table.grid tr.detail td { padding-top: 0; background: var(--surface); }
+.svc { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; background: var(--tone); }
+pre.out { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--ink);
+  font-size: 12.5px; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto;
+  border-left: 3px solid var(--bad); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+
+/* ---- activity ------------------------------------------------------------ */
+.tabs { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); margin-top: 30px; flex-wrap: wrap; }
+.tab { border: none; background: none; padding: 9px 14px; cursor: pointer; color: var(--ink-3); font-weight: 600;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tab .count { font-size: 12px; color: var(--ink-3); margin-left: 4px; font-weight: 600; }
+.filters { margin-left: auto; display: flex; align-items: center; gap: 10px; padding: 4px 0; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: var(--surface); padding: 4px 11px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--ink-2); }
+.seg button + button { border-left: 1px solid var(--border-strong); }
+.seg button[aria-pressed="true"] { background: var(--surface-3); color: var(--ink); }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.panel { margin-top: 14px; }
+.day { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3);
+  padding: 10px 16px 6px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.ev { display: grid; grid-template-columns: 104px 150px 96px minmax(0, 1fr); gap: 12px; padding: 8px 16px;
+  border-bottom: 1px solid var(--border); font-size: 13.5px; align-items: baseline; }
+.ev:last-child { border-bottom: none; }
+.ev .time { color: var(--ink-3); white-space: nowrap; }
+.ev .where { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev .where.train-wide { color: var(--ink-3); font-weight: 500; }
+.ev .kind { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.ev .what { overflow-wrap: anywhere; }
+.ev .what code { color: var(--ink-2); background: var(--surface-2); padding: 1px 6px; border-radius: 5px; }
+.ev.bad .what { color: var(--bad); font-weight: 600; }
+pre.log { background: #0e1116; color: #d6dde6; padding: 14px 16px; border-radius: var(--radius); overflow: auto;
+  max-height: 520px; margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
+.empty { padding: 28px 16px; text-align: center; color: var(--ink-3); }
+
+/* ---- dialogs + toasts ---------------------------------------------------- */
+dialog { border: 1px solid var(--border); border-radius: 14px; padding: 0; background: var(--surface); color: var(--ink);
+  width: min(560px, calc(100vw - 32px)); box-shadow: 0 24px 60px rgba(0, 0, 0, .28); }
+dialog::backdrop { background: rgba(10, 14, 20, .5); }
+dialog form { padding: 20px 22px; }
+dialog h3 { margin: 0 0 6px; font-size: 18px; }
+dialog p { margin: 8px 0; color: var(--ink-2); }
+dialog label.field { display: block; font-size: 13px; font-weight: 650; margin: 14px 0 5px; }
+dialog input[type=text], dialog input[type=password] { width: 100%; padding: 9px 11px; border: 1px solid var(--border-strong);
+  border-radius: 8px; background: var(--surface); }
+dialog .hint { color: var(--ink-3); font-size: 12.5px; margin-top: 4px; }
+dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.preview { margin-top: 14px; max-height: 230px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.preview table.grid td, .preview table.grid th { padding: 7px 12px; }
+#toasts { position: fixed; bottom: 18px; right: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
+.toast { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); padding: 10px 14px;
+  border-radius: 9px; box-shadow: 0 8px 24px rgba(0, 0, 0, .16); max-width: 380px; font-size: 14px; }
+.toast.error { border-left-color: var(--bad); }
+
+/* ---- responsive ---------------------------------------------------------- */
+@media (max-width: 1100px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; }
-  aside { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
-  #departures { display: flex; gap: 6px; overflow-x: auto; }
-  #departures .nav-item { min-width: 200px; }
-  main { padding: 14px 16px 40px; }
-  .pipeline { flex-direction: column; }
-  .stop { max-width: none; flex-basis: auto; }
-  .arrow { transform: rotate(90deg); padding: 0; }
-  .events li { grid-template-columns: 1fr; gap: 2px; }
-  .user-chip label { display: none; }
+  .sidebar { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); padding: 10px 12px; }
+  .sidebar .group { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+  .sidebar .nav-item { min-width: 210px; margin: 0; border-color: var(--border); }
+  .nav-label { margin: 10px 4px 6px; }
+  .main { padding: 16px 16px 40px; }
+  .page-head h1 { font-size: 22px; }
+  .page-head .actions { margin-left: 0; width: 100%; }
+  .tile .value { font-size: 19px; }
+  .layout { background: none; }
+  .sidebar { background: var(--surface); }
+  .who { display: none; }
+  .brand .train { display: none; }
+  .callout { flex-wrap: wrap; }
+  .callout .btn { width: 100%; justify-content: center; }
+  /* tables become stacked rows */
+  table.grid thead { display: none; }
+  table.grid, table.grid tbody, table.grid tr, table.grid td { display: block; width: 100%; }
+  table.grid tr { border-bottom: 1px solid var(--border); padding: 8px 0; }
+  table.grid tr:last-child { border-bottom: none; }
+  table.grid td { border: none; padding: 4px 16px; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; }
+  table.grid td::before { content: attr(data-label); font-size: 12px; font-weight: 700; color: var(--ink-3);
+    text-transform: uppercase; letter-spacing: .04em; padding-top: 2px; }
+  table.grid td.name { white-space: normal; }
+  table.grid tr.detail td { display: block; }
+  table.grid tr.detail td::before { content: none; }
+  .ev { grid-template-columns: 100px minmax(0, 1fr); gap: 2px 10px; }
+  .ev .kind { grid-column: 2; }
+  .ev .what { grid-column: 1 / -1; }
+  .station { min-width: 96px; }
 }
 </style>
 </head>
 <body>
-<header class="top">
-  <h1>traintraintrain <span class="train" id="trainName"></span></h1>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="13" rx="3"/><path d="M5 10h14M9 20l-2 2M15 20l2 2M9 16v.01M15 16v.01"/></svg>
+    </div>
+    <span class="name">traintraintrain</span>
+    <span class="train" id="trainName"></span>
+  </div>
   <span class="spacer"></span>
-  <div class="user-chip" id="userChip"></div>
-  <button class="btn primary" id="departBtn">New departure</button>
+  <div class="who" id="userChip"></div>
+  <button class="btn primary" id="departBtn" type="button">New departure</button>
 </header>
 
 <div class="layout">
-  <aside>
-    <button class="nav-item" id="overviewNav"><div class="ver">Timetable</div>
-      <div class="sub">Service hours and projected arrivals</div></button>
-    <h2>Departures</h2>
-    <div id="departures"><div class="empty">Loading…</div></div>
-  </aside>
-  <main id="main"></main>
+  <nav class="sidebar" aria-label="Departures">
+    <button class="nav-item" id="overviewNav" type="button">
+      <div class="top"><span class="ver">Timetable</span></div>
+      <div class="sub">Service hours &amp; projected arrivals</div>
+    </button>
+    <div id="depList"><div class="nav-empty">Loading…</div></div>
+  </nav>
+  <main class="main" id="main" tabindex="-1"></main>
 </div>
 
 <dialog id="departDialog">
   <form method="dialog">
     <h3>New departure</h3>
-    <label for="dpVersion">Version to deploy</label>
+    <p>Rolls a version out stop by stop, within each platform's timetable.</p>
+    <label class="field" for="dpVersion">Version to deploy</label>
     <input type="text" id="dpVersion" required pattern="[A-Za-z0-9][A-Za-z0-9._+\-]{0,99}" placeholder="v1.5.0" autocomplete="off">
-    <label for="dpPrev">Previous version (rollback target)</label>
+    <label class="field" for="dpPrev">Rollback target (previous version)</label>
     <input type="text" id="dpPrev" pattern="[A-Za-z0-9][A-Za-z0-9._+\-]{0,99}" placeholder="v1.4.0" autocomplete="off">
     <div class="hint">Used by the rollback command if a platform fails.</div>
-    <label class="check"><input type="checkbox" id="dpDry"> Dry run (print commands, skip dwell)</label>
-    <div class="tt-preview" id="dpTimetable"><div class="empty">Loading timetable…</div></div>
+    <label class="check" style="margin-top:14px"><input type="checkbox" id="dpDry"> Dry run: print commands, skip dwell</label>
+    <div class="preview" id="dpTimetable"><div class="empty small">Loading timetable…</div></div>
     <div class="buttons">
       <button class="btn" value="cancel" formnovalidate>Cancel</button>
       <button class="btn primary" value="ok">Depart</button>
@@ -228,14 +327,14 @@ dialog .check { display: flex; gap: 8px; align-items: center; font-weight: 500; 
 <dialog id="tokenDialog">
   <form method="dialog">
     <h3>Access token required</h3>
-    <div class="hint">This UI is protected by <code>TRAINTRAINTRAIN_UI_TOKEN</code>. Ask the operator for the token.</div>
-    <label for="tokenInput">Token</label>
+    <p>This UI is protected by <code>TRAINTRAINTRAIN_UI_TOKEN</code>. Ask the operator for the token.</p>
+    <label class="field" for="tokenInput">Token</label>
     <input type="password" id="tokenInput" autocomplete="off">
     <div class="buttons"><button class="btn primary" value="ok">Save</button></div>
   </form>
 </dialog>
 
-<div id="toasts"></div>
+<div id="toasts" role="status" aria-live="polite"></div>
 
 <script>
 "use strict";
@@ -247,23 +346,110 @@ const store = {
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const STATUS_LABEL = {
-  scheduled: "Scheduled", held: "Held at signal", deploying: "Deploying", dwelling: "Dwelling",
-  succeeded: "Succeeded", failed: "Failed", rolled_back: "Rolled back", rollback_failed: "Rollback failed",
-  aborted: "Aborted", en_route: "En route", at_signal: "At signal",
-  interrupted: "Interrupted", starting: "Departing",
+// ---- icons ------------------------------------------------------------------
+const PATHS = {
+  check: '<path d="M5 12.5l4.2 4.2L19 7"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  pause: '<path d="M9 6v12M15 6v12"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  spin: '<path d="M12 3a9 9 0 1 1-9 9"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  circle: '<circle cx="12" cy="12" r="7.5"/>',
+  undo: '<path d="M9 7L4.5 11.5 9 16"/><path d="M5 11.5h9a5 5 0 0 1 0 10h-2"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/>',
+  alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.2v.1"/>',
+  signal: '<rect x="8" y="3" width="8" height="15" rx="4"/><circle cx="12" cy="7.5" r="1.4" fill="currentColor"/><circle cx="12" cy="13" r="1.4"/><path d="M12 18v3"/>',
+  flag: '<path d="M6 21V4M6 4h11l-2 4 2 4H6"/>',
 };
-const ACTIVE = new Set(["deploying", "dwelling", "en_route", "starting"]);
-const pill = (s) => `<span class="pill s-${esc(s)}${ACTIVE.has(s) ? " pulse" : ""}">${esc(STATUS_LABEL[s] || s)}</span>`;
+function icon(name, size = 14, extra = "") {
+  return `<svg class="ico ${extra}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name]}</svg>`;
+}
 
-let state = { config: null, departures: [], selected: null, dep: null, tab: "events", whoami: null,
-  inflight: false, showChecks: false };
+// ---- status model -------------------------------------------------------------
+// Tone drives icon/mark colour; labels stay in ink so status never relies on colour alone.
+const STATUS = {
+  scheduled:       { label: "Scheduled",       tone: "neutral", icon: "circle" },
+  held:            { label: "Held at signal",  tone: "warn",    icon: "pause" },
+  deploying:       { label: "Deploying",       tone: "active",  icon: "spin" },
+  dwelling:        { label: "Dwelling",        tone: "active",  icon: "clock" },
+  succeeded:       { label: "Succeeded",       tone: "good",    icon: "check" },
+  failed:          { label: "Failed",          tone: "bad",     icon: "x" },
+  rolled_back:     { label: "Rolled back",     tone: "serious", icon: "undo" },
+  rollback_failed: { label: "Rollback failed", tone: "bad",     icon: "alert" },
+  aborted:         { label: "Aborted",         tone: "neutral", icon: "stop" },
+  en_route:        { label: "En route",        tone: "active",  icon: "play" },
+  at_signal:       { label: "At signal",       tone: "warn",    icon: "signal" },
+  interrupted:     { label: "Interrupted",     tone: "warn",    icon: "alert" },
+  starting:        { label: "Departing",       tone: "active",  icon: "spin" },
+  arrived:         { label: "Arrived",         tone: "good",    icon: "flag" },
+};
+const st = (s) => STATUS[s] || { label: s, tone: "neutral", icon: "circle" };
+function chip(s) {
+  const m = st(s);
+  return `<span class="chip t-${m.tone}">${icon(m.icon, 13, m.icon === "spin" ? "spin" : "")}${esc(m.label)}</span>`;
+}
+const ACTIVE_PLATFORM = new Set(["deploying", "dwelling"]);
+const PROBLEM = new Set(["failed", "rolled_back", "rollback_failed"]);
 
-// ---- API ------------------------------------------------------------------
+// Order matters: it is the order of segments in progress meters and legends.
+const METER = [
+  ["succeeded", "good", "succeeded"], ["rolled_back", "serious", "rolled back"],
+  ["failed", "bad", "failed"], ["rollback_failed", "bad", "rollback failed"],
+  ["deploying", "active", "deploying"], ["dwelling", "active", "dwelling"],
+  ["held", "warn", "held"], ["aborted", "neutral", "aborted"],
+];
+function meter(counts, total, big = false) {
+  const segs = METER.filter(([k]) => counts[k]).map(([k, tone]) =>
+    `<span class="m-${tone}" style="width:${(100 * counts[k]) / total}%"></span>`).join("");
+  const done = counts.succeeded || 0;
+  return `<div class="meter${big ? " lg" : ""}" role="img" aria-label="${done} of ${total} platforms succeeded">${segs}</div>`;
+}
+function legend(counts, total) {
+  const parts = METER.filter(([k]) => counts[k]).map(([k, tone, label]) =>
+    `<span><i class="m-${tone}"></i>${counts[k]} ${label}</span>`);
+  const sched = total - Object.entries(counts).filter(([k]) => k !== "scheduled").reduce((a, [, v]) => a + v, 0);
+  if (sched > 0) parts.push(`<span><i style="background:var(--surface-3)"></i>${sched} scheduled</span>`);
+  return `<div class="legend">${parts.join("")}</div>`;
+}
+
+// ---- time ---------------------------------------------------------------------
+function rel(iso) {
+  if (!iso) return "";
+  const s = Math.round((Date.now() - new Date(iso)) / 1000), a = Math.abs(s);
+  const f = a < 60 ? `${a}s` : a < 3600 ? `${Math.round(a / 60)}m` : a < 86400
+    ? `${Math.floor(a / 3600)}h ${Math.round((a % 3600) / 60)}m` : `${(a / 86400).toFixed(1)}d`;
+  return s >= 0 ? `${f} ago` : `in ${f}`;
+}
+function dur(fromIso, toIso) {
+  if (!fromIso) return "";
+  const s = Math.max(0, Math.round(((toIso ? new Date(toIso) : new Date()) - new Date(fromIso)) / 1000));
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+}
+const fmt = (iso, opts, tz) => {
+  if (!iso) return "";
+  try { return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: tz }).format(new Date(iso)); } catch { return iso; }
+};
+const clock = (iso) => fmt(iso, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const when = (iso, tz) => fmt(iso, { weekday: "short", hour: "2-digit", minute: "2-digit", timeZoneName: tz ? "short" : undefined }, tz);
+const whenFull = (iso) => fmt(iso, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const dayKey = (iso) => fmt(iso, { year: "numeric", month: "2-digit", day: "2-digit" });
+function dayLabel(iso) {
+  const k = dayKey(iso), today = dayKey(new Date().toISOString()), yest = dayKey(new Date(Date.now() - 864e5).toISOString());
+  return k === today ? "Today" : k === yest ? "Yesterday" : fmt(iso, { weekday: "long", month: "short", day: "numeric" });
+}
+const cap = (t) => t ? t[0].toUpperCase() + t.slice(1) : t;
+const city = (tz) => (tz || "").split("/").pop().replace(/_/g, " ");
+
+// ---- app state + API ------------------------------------------------------------
+let S = { config: null, deps: [], selected: null, dep: null, tab: "events", whoami: null, busy: false,
+  evFilter: "all", showChecks: false };
+
 async function api(path, body) {
   const headers = { "X-Traintraintrain-User": store.get("dt-user") || "" };
   const token = store.get("dt-token");
-  if (token) headers["Authorization"] = "Bearer " + token;
+  if (token) headers.Authorization = "Bearer " + token;
   const opts = { headers };
   if (body !== undefined) {
     opts.method = "POST";
@@ -278,7 +464,6 @@ async function api(path, body) {
   if (!res.ok) { const e = new Error(data.error || res.statusText); e.status = res.status; throw e; }
   return data;
 }
-
 function toast(msg, error = false) {
   const el = document.createElement("div");
   el.className = "toast" + (error ? " error" : "");
@@ -286,7 +471,6 @@ function toast(msg, error = false) {
   $("toasts").appendChild(el);
   setTimeout(() => el.remove(), error ? 7000 : 3500);
 }
-
 function askToken() {
   const d = $("tokenDialog");
   if (d.open) return;
@@ -294,7 +478,6 @@ function askToken() {
   d.showModal();
   d.onclose = () => { if ($("tokenInput").value) { store.set("dt-token", $("tokenInput").value); refreshAll(); } };
 }
-
 function confirmAction(title, bodyHtml, okLabel, okClass = "primary") {
   return new Promise((resolve) => {
     const d = $("confirmDialog");
@@ -308,213 +491,371 @@ function confirmAction(title, bodyHtml, okLabel, okClass = "primary") {
   });
 }
 
-// ---- time formatting ------------------------------------------------------
-function rel(iso) {
-  if (!iso) return "";
-  const s = Math.round((Date.now() - new Date(iso)) / 1000);
-  const a = Math.abs(s);
-  const f = a < 60 ? `${a}s` : a < 3600 ? `${Math.round(a / 60)}m` : a < 86400 ? `${(a / 3600).toFixed(a < 36000 ? 1 : 0)}h` : `${(a / 86400).toFixed(1)}d`;
-  return s >= 0 ? `${f} ago` : `in ${f}`;
+// ---- derived facts -------------------------------------------------------------
+const depStatus = (d) => d.starting ? "starting" : d.interrupted ? "interrupted"
+  : d.status === "succeeded" ? "arrived" : d.status;
+const cfgPlatform = (name) => {
+  for (const s of S.config.stops) for (const p of s.platforms) if (p.name === name) return p;
+  return null;
+};
+function stopState(stop, dep) {
+  const ps = stop.platforms.map((p) => (dep.platforms[p.name] || {}).status || "scheduled");
+  const sig = ((dep.stops || {})[stop.name] || {}).signal;
+  if (ps.every((s) => s === "succeeded")) return "succeeded";
+  if (ps.some((s) => s === "failed" || s === "rollback_failed")) return "failed";
+  if (ps.some((s) => s === "rolled_back")) return "rolled_back";
+  if (sig && sig.status === "waiting") return "at_signal";
+  if (ps.some((s) => ACTIVE_PLATFORM.has(s))) return "en_route";
+  if (ps.some((s) => s === "held")) return "held";
+  if (ps.some((s) => s === "aborted")) return "aborted";
+  return "scheduled";
 }
-function dur(fromIso, toIso) {
-  if (!fromIso) return "";
-  const s = Math.max(0, Math.round(((toIso ? new Date(toIso) : new Date()) - new Date(fromIso)) / 1000));
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
-  return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+function currentStop(dep) {
+  const i = S.config.stops.findIndex((s) => stopState(s, dep) !== "succeeded");
+  return i;
 }
-function fmtTime(iso, tz) {
-  if (!iso) return "";
-  try {
-    return new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric",
-      hour: "2-digit", minute: "2-digit", timeZone: tz, timeZoneName: tz ? "short" : undefined }).format(new Date(iso));
-  } catch { return iso; }
+function nextUp(dep) {
+  const status = depStatus(dep);
+  const names = (pred) => Object.entries(dep.platforms || {}).filter(([, p]) => pred(p.status)).map(([n]) => n);
+  if (status === "starting") return ["Departing…", "Starting the train process"];
+  if (dep.signal_at && !dep.signal_clear_submitted) return [`Clear the signal`, `at stop “${dep.signal_at}”`];
+  if (dep.signal_clear_submitted) return ["Signal cleared", "Train is about to proceed"];
+  if (status === "arrived") return ["Nothing — done", "Live on all platforms"];
+  if (status === "failed") return ["Fix and retry", "Failed platforms can be retried"];
+  if (status === "aborted") return ["Resume when ready", "Train was braked"];
+  if (status === "interrupted") return ["Resume the journey", "Its process stopped"];
+  const dep_ = names((s) => s === "deploying"), dw = names((s) => s === "dwelling");
+  if (dep_.length) return [`Deploying ${dep_.length > 1 ? dep_.length + " platforms" : dep_[0]}`, "Running the deploy command"];
+  if (dw.length) return [`Checking ${dw.length > 1 ? dw.length + " platforms" : dw[0]}`, "Inspections running while dwelling"];
+  const held = names((s) => s === "held").map((n) => [n, cfgPlatform(n)]).filter(([, c]) => c && c.next_start)
+    .sort((a, b) => a[1].next_start.localeCompare(b[1].next_start));
+  if (held.length) return [`${held[0][0]} ${rel(held[0][1].next_start)}`, `Service resumes ${when(held[0][1].next_start, held[0][1].timezone)}`];
+  return ["Waiting", "Between stops"];
+}
+function serviceCell(cp, withName = true) {
+  if (!cp) return "";
+  const name = withName ? `${esc(cp.timetable)} · ` : "";
+  if (cp.in_service) {
+    const soon = cp.service_end && new Date(cp.service_end) - Date.now() < 24 * 3600e3;
+    return `<span class="svc t-good"><span class="dot"></span>Open</span>
+      <span class="two">${name}${soon ? "closes " + esc(when(cp.service_end, cp.timezone)) : esc(city(cp.timezone))}</span>`;
+  }
+  return `<span class="svc t-neutral"><span class="dot"></span>Closed</span>
+    <span class="two">${name}${cp.next_start ? "opens " + esc(when(cp.next_start, cp.timezone)) : "no service in 90 days"}</span>`;
+}
+function noteFor(name, p, dep) {
+  const cp = cfgPlatform(name), s = p.status;
+  if (s === "held" && cp && cp.next_start) return `Waiting for service in ${esc(city(cp.timezone))} — resumes ${esc(rel(cp.next_start))}`;
+  if (s === "deploying") return `Deploying <code>${esc(dep.version)}</code>`;
+  if (s === "dwelling") return `Health checks running · dwell ${esc(cp ? cp.dwell : "")}`;
+  if (s === "succeeded") return `<code>${esc(dep.version)}</code> is live and healthy`;
+  if (s === "scheduled") {
+    if (["failed", "aborted"].includes(dep.status) || dep.interrupted) return "Not served — train stopped";
+    return "Waits for earlier stops";
+  }
+  return esc(cap(p.message || ""));
 }
 
-// ---- rendering: sidebar -----------------------------------------------------
-function depStatus(d) { return d.starting ? "starting" : d.interrupted ? "interrupted" : d.status; }
-
-function renderDepartures() {
-  const el = $("departures");
-  $("overviewNav").classList.toggle("active", !state.selected);
-  if (!state.departures.length) { el.innerHTML = `<div class="empty">No departures yet. Start one with “New departure”.</div>`; return; }
-  el.innerHTML = state.departures.map((d) => {
-    const segs = ["succeeded", "rolled_back", "failed", "rollback_failed", "dwelling", "deploying", "held"]
-      .map((k) => d.counts[k] ? `<span class="bar-${k}" style="width:${(100 * d.counts[k]) / d.total}%"></span>` : "").join("");
-    const done = d.counts.succeeded || 0;
-    return `<button class="nav-item${state.selected === d.version ? " active" : ""}" data-version="${esc(d.version)}">
-      <div class="row"><span class="ver">${esc(d.version)}</span>${pill(depStatus(d))}</div>
-      <div class="sub">${done}/${d.total} platforms · departed ${esc(rel(d.started_at))}</div>
-      <div class="progress">${segs}</div></button>`;
-  }).join("");
-  el.querySelectorAll(".nav-item").forEach((b) => b.onclick = () => select(b.dataset.version));
+// ---- rendering: sidebar ---------------------------------------------------------
+function renderSidebar() {
+  $("overviewNav").setAttribute("aria-current", S.selected ? "false" : "page");
+  const list = $("depList");
+  if (!S.deps.length) {
+    list.innerHTML = `<div class="nav-label">Departures</div><div class="nav-empty">No departures yet. Start one with “New departure”.</div>`;
+    return;
+  }
+  const active = S.deps.filter((d) => d.active || d.interrupted || d.starting);
+  const recent = S.deps.filter((d) => !active.includes(d));
+  const item = (d) => `<button type="button" class="nav-item" data-version="${esc(d.version)}"
+      aria-current="${S.selected === d.version ? "page" : "false"}">
+      <div class="top"><span class="ver">${esc(d.version)}</span>${chip(depStatus(d))}</div>
+      <div class="meter-wrap">${meter(d.counts, d.total)}</div>
+      <div class="sub num">${d.counts.succeeded || 0} of ${d.total} platforms · ${esc(rel(d.started_at))}</div></button>`;
+  list.innerHTML =
+    (active.length ? `<div class="nav-label">In progress</div><div class="group">${active.map(item).join("")}</div>` : "") +
+    (recent.length ? `<div class="nav-label">Recent</div><div class="group">${recent.map(item).join("")}</div>` : "");
+  list.querySelectorAll(".nav-item").forEach((b) => b.onclick = () => select(b.dataset.version));
 }
 
-// ---- rendering: departure ---------------------------------------------------
-function serviceLine(cp, status) {
-  if (!cp || ["succeeded", "rolled_back", "held"].includes(status)) return "";
-  if (cp.in_service)
-    return `<div class="svc"><span class="dot open"></span>${esc(cp.timetable)} in service${cp.service_end ? " until " + esc(fmtTime(cp.service_end, cp.timezone)) : ""}</div>`;
-  if (cp.next_start)
-    return `<div class="svc"><span class="dot closed"></span>${esc(cp.timetable)} resumes ${esc(fmtTime(cp.next_start, cp.timezone))} (${esc(rel(cp.next_start))})</div>`;
-  return `<div class="svc"><span class="dot closed"></span>${esc(cp.timetable)}: no service in the next 90 days</div>`;
-}
-
-function signalTag(stop, info) {
-  if (!stop.signal) return "";
-  const sig = info && info.signal;
-  if (sig && sig.status === "cleared")
-    return `<span class="tag" title="cleared by ${esc(sig.cleared_by)}">🟢 signal cleared</span>`;
-  if (sig && sig.status === "waiting") return `<span class="tag">🔴 signal at danger</span>`;
-  return `<span class="tag">🚦 signal</span>`;
-}
-
-function renderLine(dep) {
-  const cfg = state.config;
-  return `<div class="pipeline">` + cfg.stops.map((s, i) => {
-    const info = (dep && dep.stops && dep.stops[s.name]) || {};
-    const tags = [
-      s.parallel_platforms > 1 ? `<span class="tag">${s.parallel_platforms} platforms at once</span>` : "",
-      s.headway ? `<span class="tag">headway ${esc(s.headway)}</span>` : "",
-      signalTag(s, info),
-    ].join("");
-    const platforms = s.platforms.map((cp) => {
-      const ps = dep ? dep.platforms[cp.name] || { status: "scheduled" } : null;
-      const st = ps ? ps.status : null;
-      return `<div class="card platform st-${esc(st || "none")}">
-        <div class="row"><span class="name">${esc(cp.name)}</span>${st ? pill(st) : `<span class="tag">dwell ${esc(cp.dwell)}</span>`}</div>
-        ${ps && ps.message ? `<div class="msg">${esc(ps.message)}</div>` : ""}
-        ${ps && ps.output ? `<pre class="out mono">${esc(ps.output)}</pre>` : ""}
-        ${ps && ps.started_at ? `<div class="msg">started ${esc(rel(ps.started_at))}${ps.finished_at ? " · took " + esc(dur(ps.started_at, ps.finished_at)) : ""}</div>` : ""}
-        ${serviceLine(cp, st)}
-      </div>`;
-    }).join("");
-    return (i ? `<div class="arrow">→</div>` : "") +
-      `<div class="stop"><div class="stop-head"><span class="name">${esc(s.name)}</span><span class="tags">${tags}</span></div>${platforms}</div>`;
+// ---- rendering: departure -------------------------------------------------------
+function renderRoute(dep) {
+  const stops = S.config.stops;
+  return `<div class="route" role="list">` + stops.map((s, i) => {
+    const state = dep ? stopState(s, dep) : "scheduled";
+    const m = st(state);
+    // The line into a station turns green once the previous stop is fully served.
+    const reached = dep && i > 0 && stopState(stops[i - 1], dep) === "succeeded";
+    const desc = [`${s.platforms.length} platform${s.platforms.length > 1 ? "s" : ""}`, s.signal ? "signal" : ""].filter(Boolean).join(" · ");
+    return `<button type="button" role="listitem" class="station t-${m.tone}${reached ? " reached" : ""}"
+        data-jump="${esc(s.name)}" title="${esc(m.label)}">
+      <div class="node">${icon(m.icon, 15, m.icon === "spin" ? "spin" : "")}</div>
+      <div class="sname">${esc(s.name)}</div>
+      <div class="sdesc">${dep ? esc(m.label) + " · " : ""}${esc(desc)}</div></button>`;
   }).join("") + `</div>`;
 }
 
-function renderEvents(dep) {
-  let evs = (dep.events || []).slice().reverse();
-  if (!state.showChecks) evs = evs.filter((e) => !/^(\[dry-run\] )?(inspection|health check):/.test(e.message));
-  if (!evs.length) return `<div class="empty">No events yet.</div>`;
-  return `<ul class="events">` + evs.map((e) => {
-    const bad = /FAILED|failed|brake|abort/.test(e.message);
-    const where = e.platform || e.region;
-    return `<li><span class="t" title="${esc(e.at)}">${esc(fmtTime(e.at))}</span>
-      <span>${where ? `<span class="r">${esc(where)}</span>` : ""}<span class="${bad ? "bad" : ""}">${esc(e.message)}</span></span></li>`;
-  }).join("") + `</ul>`;
+function renderStops(dep) {
+  return S.config.stops.map((s, i) => {
+    const info = (dep.stops || {})[s.name] || {};
+    const sig = info.signal;
+    const facts = [
+      s.parallel_platforms > 1 ? `<span class="fact">${s.parallel_platforms} at a time</span>` : "",
+      s.headway ? `<span class="fact">${icon("clock", 12)}headway ${esc(s.headway)}</span>` : "",
+      s.signal ? `<span class="fact ${sig && sig.status === "cleared" ? "t-good" : sig ? "t-warn" : "t-neutral"}">${icon("signal", 12)}${
+        sig && sig.status === "cleared" ? `signal cleared by ${esc(sig.cleared_by)}` : sig ? "signal at danger" : "signal"}</span>` : "",
+    ].join("");
+    const rows = s.platforms.map((cp) => {
+      const p = dep.platforms[cp.name] || { status: "scheduled" };
+      const running = ACTIVE_PLATFORM.has(p.status);
+      const took = p.started_at ? (p.finished_at ? dur(p.started_at, p.finished_at) : running ? dur(p.started_at) + " so far" : "") : "";
+      const main = `<tr>
+        <td class="name" data-label="Platform"><div>${esc(cp.name)}</div></td>
+        <td data-label="Status"><div>${chip(p.status)}</div></td>
+        <td data-label="Timetable"><div>${["succeeded", "rolled_back"].includes(p.status) ? `<span class="muted">${esc(cp.timetable)}</span>` : serviceCell(cp)}</div></td>
+        <td data-label="Started" class="num nowrap"><div>${p.started_at ? esc(clock(p.started_at)) : "<span class='muted'>—</span>"}</div></td>
+        <td data-label="Took" class="num"><div>${took ? esc(took) : "<span class='muted'>—</span>"}</div></td>
+        <td data-label="Notes"><div>${noteFor(cp.name, p, dep)}</div></td></tr>`;
+      const detail = p.output ? `<tr class="detail"><td colspan="6"><pre class="out mono">${esc(p.output)}</pre></td></tr>` : "";
+      return main + detail;
+    }).join("");
+    return `<section class="stop" id="stop-${esc(s.name)}" aria-label="Stop ${esc(s.name)}">
+      <div class="stop-head"><span class="idx">${i + 1}</span><h3>${esc(s.name)}</h3>${chip(stopState(s, dep))}
+        <div class="facts">${facts}</div></div>
+      <table class="grid fixed"><colgroup><col style="width:18%"><col style="width:15%"><col style="width:22%">
+        <col style="width:14%"><col style="width:9%"><col style="width:22%"></colgroup>
+      <thead><tr><th>Platform</th><th>Status</th><th>Timetable</th><th>Started</th><th>Took</th><th>Notes</th></tr></thead>
+      <tbody>${rows}</tbody></table></section>`;
+  }).join("");
 }
 
-const ACTION_LABEL = { depart: "departed", start: "departed", resume: "resumed", brake: "pulled the brake",
-  abort: "pulled the brake", clear_signal: "cleared the signal", approve: "cleared the signal" };
+function classify(msg) {
+  let m = msg, dry = false, x0;
+  if (m.startsWith("[dry-run] ")) { dry = true; m = m.slice(10); }
+  const cmd = m.match(/^(deploy|inspection|health check|rollback): ([\s\S]*)$/);
+  if (cmd) {
+    const kind = { deploy: ["Deploy", "play"], inspection: ["Inspect", "check"], "health check": ["Inspect", "check"], rollback: ["Rollback", "undo"] }[cmd[1]];
+    return { kind: kind[0], ico: kind[1], tone: cmd[1] === "rollback" ? "serious" : "neutral", text: `<code>${esc(cmd[2])}</code>`, check: kind[0] === "Inspect", dry };
+  }
+  if (/^FAILED:/.test(m)) return { kind: "Failed", ico: "x", tone: "bad", text: esc(cap(m.replace(/^FAILED:\s*/, ""))), bad: true };
+  if (/^held at signal/.test(m)) return { kind: "Held", ico: "pause", tone: "warn", text: esc(cap(m.replace(/^held at signal:\s*/, ""))) };
+  if ((x0 = m.match(/^signal at stop '(.+?)' cleared by (.+)$/)))
+    return { kind: "Signal", ico: "signal", tone: "good", text: `Signal at <strong>${esc(x0[1])}</strong> cleared by ${esc(x0[2])}` };
+  if ((x0 = m.match(/^signal at stop '(.+?)' is red/)))
+    return { kind: "Signal", ico: "signal", tone: "warn", text: `Signal at <strong>${esc(x0[1])}</strong> is red — waiting for someone to clear it` };
+  if (/^dwelling for/.test(m)) return { kind: "Dwell", ico: "clock", tone: "active", text: esc(m.replace(/^dwelling/, "Dwelling")) };
+  if (m === "succeeded") return { kind: "Done", ico: "check", tone: "good", text: "Healthy" };
+  if (/brake|halted|aborted/.test(m)) return { kind: "Stopped", ico: "stop", tone: "bad", text: esc(cap(m)), bad: true };
+  if (/^train arrived/.test(m)) return { kind: "Arrived", ico: "flag", tone: "good", text: esc(m.replace(/^train arrived:\s*/, "")) };
+  let x;
+  if ((x = m.match(/^arriving at stop '(.+?)': (.+?)(?: \(parallel_platforms=\d+\))?$/)))
+    return { kind: "Stop", ico: "play", tone: "active", text: `Arrived at <strong>${esc(x[1])}</strong> · serving ${esc(x[2])}` };
+  if ((x = m.match(/^departed stop '(.+?)'$/)))
+    return { kind: "Stop", ico: "check", tone: "good", text: `Left <strong>${esc(x[1])}</strong> — all platforms healthy` };
+  if ((x = m.match(/^train (.+?) departed with version (.+)$/)))
+    return { kind: "Departed", ico: "play", tone: "active", text: `Train departed with <code>${esc(x[2])}</code>` };
+  if (/^train resumed/.test(m)) return { kind: "Resumed", ico: "play", tone: "active", text: "Journey resumed" };
+  if ((x = m.match(/^headway before stop '(.+?)': (.+)$/)))
+    return { kind: "Headway", ico: "clock", tone: "neutral", text: `Waiting ${esc(x[2])} before <strong>${esc(x[1])}</strong>` };
+  return { kind: "Info", ico: "circle", tone: "neutral", text: esc(cap(m)) };
+}
 
+function renderEvents(dep) {
+  let evs = (dep.events || []).slice().reverse().map((e) => ({ ...e, c: classify(e.message), where: e.platform || e.region }));
+  if (!S.showChecks) evs = evs.filter((e) => !e.c.check);
+  if (S.evFilter === "problems") evs = evs.filter((e) => e.c.bad || e.c.kind === "Rollback");
+  if (!evs.length) return `<div class="card"><div class="empty">${S.evFilter === "problems" ? "No problems recorded." : "No events yet."}</div></div>`;
+  let out = "", lastDay = "";
+  for (const e of evs) {
+    const d = dayLabel(e.at);
+    if (d !== lastDay) { out += `<div class="day">${esc(d)}</div>`; lastDay = d; }
+    out += `<div class="ev${e.c.bad ? " bad" : ""}">
+      <span class="time num" title="${esc(e.at)}">${esc(clock(e.at))}</span>
+      <span class="where${e.where ? "" : " train-wide"}">${esc(e.where || "train")}</span>
+      <span class="kind t-${e.c.tone}">${icon(e.c.ico, 12)}${esc(e.c.kind)}${e.c.dry ? " (dry run)" : ""}</span>
+      <span class="what">${e.c.text}</span></div>`;
+  }
+  return `<div class="card">${out}</div>`;
+}
+
+const ACTION_LABEL = { depart: "Dispatched", start: "Dispatched", resume: "Resumed", brake: "Pulled the brake",
+  abort: "Pulled the brake", clear_signal: "Cleared the signal", approve: "Cleared the signal" };
 function renderActions(dep) {
   const acts = (dep.actions || []).slice().reverse();
-  if (!acts.length) return `<div class="empty">No UI actions recorded for this departure.</div>`;
-  return `<div class="table-wrap"><table><tr><th>When</th><th>Who</th><th>Action</th><th>Details</th></tr>` +
+  if (!acts.length) return `<div class="card"><div class="empty">No actions taken in the UI for this departure.</div></div>`;
+  return `<div class="card"><table class="grid"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Details</th></tr></thead><tbody>` +
     acts.map((a) => {
       const { at, user, action, version, ...rest } = a;
-      const details = Object.entries(rest).filter(([, v]) => v !== null && v !== false).map(([k, v]) => `${k}=${v}`).join(", ");
-      return `<tr><td>${esc(fmtTime(at))}</td><td>${esc(user)}</td><td>${esc(ACTION_LABEL[action] || action)}</td><td>${esc(details)}</td></tr>`;
-    }).join("") + `</table></div>`;
+      const details = Object.entries(rest).filter(([, v]) => v !== null && v !== false).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · ");
+      return `<tr><td data-label="When" class="num"><div>${esc(whenFull(at))}</div></td><td data-label="Who" class="name"><div>${esc(user)}</div></td>
+        <td data-label="Action"><div>${esc(ACTION_LABEL[action] || action)}</div></td><td data-label="Details"><div>${esc(details) || "<span class='muted'>—</span>"}</div></td></tr>`;
+    }).join("") + `</tbody></table></div>`;
 }
 
 function renderDeparture() {
-  const dep = state.dep;
-  const main = $("main");
+  const dep = S.dep, main = $("main");
   if (!dep) { main.innerHTML = `<div class="empty">Loading…</div>`; return; }
-  const st = depStatus(dep);
+  const status = depStatus(dep);
   const enRoute = dep.active;
-  const canResume = !dep.starting && !enRoute && ["failed", "aborted", "interrupted"].includes(st);
-  const hasFailed = dep.platforms && Object.values(dep.platforms).some((p) => ["failed", "rolled_back", "rollback_failed"].includes(p.status));
+  const canResume = !dep.starting && !enRoute && ["failed", "aborted", "interrupted"].includes(status);
+  const hasFailed = dep.platforms && Object.values(dep.platforms).some((p) => PROBLEM.has(p.status));
   const actions = [
-    enRoute ? `<button class="btn danger" data-act="brake" ${dep.brake_applied ? "disabled" : ""}>${dep.brake_applied ? "Braking…" : "Emergency brake"}</button>` : "",
-    canResume && hasFailed ? `<button class="btn primary" data-act="retry">Retry failed platforms</button>` : "",
-    canResume && !hasFailed ? `<button class="btn primary" data-act="resume">Resume journey</button>` : "",
+    enRoute ? `<button type="button" class="btn danger" data-act="brake" ${dep.brake_applied ? "disabled" : ""}>${icon("stop", 14)}${dep.brake_applied ? "Braking…" : "Emergency brake"}</button>` : "",
+    canResume && hasFailed ? `<button type="button" class="btn primary" data-act="retry">${icon("undo", 14)}Retry failed platforms</button>` : "",
+    canResume && !hasFailed ? `<button type="button" class="btn primary" data-act="resume">${icon("play", 14)}Resume journey</button>` : "",
   ].join("");
 
-  const banners = [];
-  if (dep.signal_at) {
-    banners.push(`<div class="banner amber"><span class="grow"><strong>🔴 Signal at “${esc(dep.signal_at)}” is at danger.</strong>
-      ${dep.signal_clear_submitted ? " Signal cleared, waiting for the train to proceed…" : " Check the earlier stops, then clear the signal to continue."}</span>
-      ${dep.signal_clear_submitted ? "" : `<button class="btn warn" data-act="clear-signal">Clear signal at ${esc(dep.signal_at)}</button>`}</div>`);
+  // One callout, the most important thing needing a person.
+  let callout = "";
+  if (dep.signal_at && !dep.signal_clear_submitted) {
+    const plats = (S.config.stops.find((s) => s.name === dep.signal_at)?.platforms || []).map((p) => p.name).join(", ");
+    callout = `<div class="callout t-warn" role="alert">${icon("signal", 22)}<div class="body">
+      <div class="title">Signal at “${esc(dep.signal_at)}” needs clearing</div>
+      <div class="text">Check the earlier stops look healthy, then clear the signal to deploy to ${esc(plats)}.</div></div>
+      <button type="button" class="btn warn" data-act="clear-signal">Clear signal</button></div>`;
+  } else if (dep.interrupted) {
+    callout = `<div class="callout t-warn" role="alert">${icon("alert", 22)}<div class="body">
+      <div class="title">The train process stopped unexpectedly</div>
+      <div class="text">Its state says it was still en route. Resume the journey to continue from where it left off.</div></div></div>`;
+  } else if (dep.status === "failed") {
+    const bad = Object.entries(dep.platforms).filter(([, p]) => PROBLEM.has(p.status)).map(([n]) => n).join(", ");
+    callout = `<div class="callout t-bad" role="alert">${icon("x", 22)}<div class="body">
+      <div class="title">Train halted: ${esc(bad)} failed</div>
+      <div class="text">See the failure output below and the log. Fix the cause, then retry the failed platforms.</div></div></div>`;
+  } else if (dep.starting) {
+    callout = `<div class="callout t-active">${icon("spin", 22, "spin")}<div class="body"><div class="title">Departing…</div>
+      <div class="text">Starting the train process.</div></div></div>`;
   }
-  if (dep.interrupted) banners.push(`<div class="banner amber"><span class="grow"><strong>The train process stopped unexpectedly.</strong> Its state says it was still en route. Resume the journey to continue from where it left off.</span></div>`);
-  if (st === "failed") banners.push(`<div class="banner red"><span class="grow"><strong>Train halted.</strong> Check the failed platform below and the log, fix the issue, then retry the failed platforms.</span></div>`);
-  if (dep.starting) banners.push(`<div class="banner blue"><span class="grow">The train is departing…</span></div>`);
 
-  const showLog = state.tab === "log", showActs = state.tab === "actions";
+  const total = dep.total || Object.keys(dep.platforms || {}).length;
+  const counts = dep.counts || {};
+  const curIdx = dep.platforms ? currentStop(dep) : -1;
+  const curStop = curIdx >= 0 ? S.config.stops[curIdx] : null;
+  const [nextTitle, nextSub] = dep.platforms ? nextUp(dep) : ["—", ""];
+  const tiles = dep.platforms ? `
+    <div class="tiles">
+      <div class="tile"><div class="label">Progress</div>
+        <div class="value num">${counts.succeeded || 0} <span class="of">of ${total} platforms</span></div>
+        <div style="margin-top:10px">${meter(counts, total, true)}</div>${legend(counts, total)}</div>
+      <div class="tile"><div class="label">Current stop</div>
+        <div class="value">${curStop ? esc(curStop.name) : "Arrived"}</div>
+        <div class="sub">${curStop ? `Stop ${curIdx + 1} of ${S.config.stops.length} · ${esc(st(stopState(curStop, dep)).label.toLowerCase())}` : `All ${S.config.stops.length} stops served`}</div></div>
+      <div class="tile"><div class="label">Next</div>
+        <div class="value">${esc(nextTitle)}</div><div class="sub">${esc(nextSub)}</div></div>
+      <div class="tile"><div class="label">Journey</div>
+        <div class="value num">${esc(dur(dep.started_at, dep.finished_at))}</div>
+        <div class="sub">Departed ${esc(whenFull(dep.started_at))}${dep.finished_at ? `<br>Ended ${esc(whenFull(dep.finished_at))}` : ""}</div></div>
+    </div>` : "";
+
+  const t = S.tab;
+  const nEvents = (dep.events || []).length, nActs = (dep.actions || []).length;
   main.innerHTML = `
-    <div class="card dep-head">
-      <div><div class="title">${esc(dep.version)}</div>
-        <div class="meta">${dep.previous_version ? `<span>rollback target <code>${esc(dep.previous_version)}</code></span>` : ""}
-          ${dep.started_at ? `<span title="${esc(dep.started_at)}">departed ${esc(rel(dep.started_at))}</span>` : ""}
-          ${dep.started_at ? `<span>journey ${esc(dur(dep.started_at, dep.finished_at))}</span>` : ""}</div></div>
-      ${pill(st)}
+    <div class="page-head">
+      <h1>${esc(dep.version)}</h1>${chip(status)}
       <div class="actions">${actions}</div>
+      <div class="meta">${dep.previous_version ? `<span>Rollback target <code>${esc(dep.previous_version)}</code></span>` : ""}
+        ${dep.started_at ? `<span>Departed ${esc(rel(dep.started_at))}</span>` : ""}</div>
     </div>
-    ${banners.join("")}
-    <div class="section-title">Route</div>
-    ${dep.platforms ? renderLine(dep) : ""}
-    <div class="tabs">
-      <button class="tab ${!showLog && !showActs ? "active" : ""}" data-tab="events">Events</button>
-      <button class="tab ${showLog ? "active" : ""}" data-tab="log">Log</button>
-      <button class="tab ${showActs ? "active" : ""}" data-tab="actions">Who did what</button>
-      ${!showLog && !showActs ? `<label class="filter"><input type="checkbox" id="showChecks" ${state.showChecks ? "checked" : ""}> Show inspections</label>` : ""}
+    ${callout}${tiles}
+    ${dep.platforms ? `<div class="section-title">Route</div>${renderRoute(dep)}${renderStops(dep)}` : ""}
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab" role="tab" data-tab="events" aria-selected="${t === "events"}">Activity<span class="count">${nEvents}</span></button>
+      <button type="button" class="tab" role="tab" data-tab="log" aria-selected="${t === "log"}">Log</button>
+      <button type="button" class="tab" role="tab" data-tab="actions" aria-selected="${t === "actions"}">Who did what<span class="count">${nActs}</span></button>
+      ${t === "events" ? `<div class="filters">
+        <div class="seg" role="group" aria-label="Filter activity">
+          <button type="button" data-filter="all" aria-pressed="${S.evFilter === "all"}">All</button>
+          <button type="button" data-filter="problems" aria-pressed="${S.evFilter === "problems"}">Problems</button></div>
+        <label class="check"><input type="checkbox" id="showChecks" ${S.showChecks ? "checked" : ""}> Show inspections</label></div>` : ""}
     </div>
-    <div class="tabpanel">${showLog ? `<pre class="log" id="logPre">${esc(dep.log || "(no output yet)")}</pre>` : showActs ? renderActions(dep) : dep.events ? renderEvents(dep) : ""}</div>`;
+    <div class="panel" role="tabpanel">${t === "log" ? `<pre class="log" id="logPre">${esc(dep.log || "(no output yet)")}</pre>`
+      : t === "actions" ? renderActions(dep) : renderEvents(dep)}</div>`;
 
-  main.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { state.tab = b.dataset.tab; renderDeparture(); });
-  const sc = $("showChecks");
-  if (sc) sc.onchange = () => { state.showChecks = sc.checked; renderDeparture(); };
+  main.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { S.tab = b.dataset.tab; renderDeparture(); });
+  main.querySelectorAll("[data-filter]").forEach((b) => b.onclick = () => { S.evFilter = b.dataset.filter; renderDeparture(); });
   main.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => doAction(b.dataset.act));
+  main.querySelectorAll("[data-jump]").forEach((b) => b.onclick = () =>
+    document.getElementById("stop-" + b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  const sc = $("showChecks");
+  if (sc) sc.onchange = () => { S.showChecks = sc.checked; renderDeparture(); };
   const pre = $("logPre");
   if (pre) pre.scrollTop = pre.scrollHeight;
 }
 
-// ---- rendering: timetable overview -------------------------------------------
+// ---- rendering: timetable overview ------------------------------------------
 async function renderOverview() {
-  const main = $("main");
-  let projRows = "";
-  try {
-    const t = await api("/api/timetable");
-    projRows = t.stops.flatMap((s) => s.platforms.map((p) =>
-      `<tr><td>${esc(s.name)}</td><td>${esc(p.name)}</td><td>${esc(fmtTime(p.start))}</td><td>${esc(fmtTime(p.end))}</td><td>${esc(p.held || "–")}</td></tr>`)).join("");
-  } catch (e) { projRows = `<tr><td colspan="5">${esc(e.message)}</td></tr>`; }
-  if (state.selected) return; // user navigated away while loading
-  const rows = state.config.stops.flatMap((s) => s.platforms.map((p) => `<tr>
-      <td>${esc(s.name)}</td><td><strong>${esc(p.name)}</strong></td><td>${esc(p.timetable)}<div class="msg">${esc(p.timezone)}</div></td>
-      <td>${p.in_service ? `<span class="pill s-succeeded">In service</span>` : `<span class="pill s-scheduled">No service</span>`}</td>
-      <td>${p.in_service ? (p.service_end ? "until " + esc(fmtTime(p.service_end, p.timezone)) : "") : p.next_start ? esc(fmtTime(p.next_start, p.timezone)) + `<div class="msg">${esc(rel(p.next_start))}</div>` : "none in 90 days"}</td>
-      <td>${esc(p.dwell)}</td></tr>`)).join("");
+  const main = $("main"), cfg = S.config;
+  let proj = null, projErr = "";
+  try { proj = await api("/api/timetable"); } catch (e) { projErr = e.message; }
+  if (S.selected) return; // navigated away while loading
+  const all = cfg.stops.flatMap((s) => s.platforms);
+  const open = all.filter((p) => p.in_service).length;
+  const nextChange = all.filter((p) => !p.in_service && p.next_start).sort((a, b) => a.next_start.localeCompare(b.next_start))[0];
+  const lastEnd = proj ? proj.stops.flatMap((s) => s.platforms).map((p) => p.end).sort().pop() : null;
+  const tables = cfg.stops.map((s, i) => `
+    <section class="stop" id="stop-${esc(s.name)}"><div class="stop-head"><span class="idx">${i + 1}</span><h3>${esc(s.name)}</h3>
+      <div class="facts">${s.parallel_platforms > 1 ? `<span class="fact">${s.parallel_platforms} at a time</span>` : ""}
+        ${s.headway ? `<span class="fact">${icon("clock", 12)}headway ${esc(s.headway)}</span>` : ""}
+        ${s.signal ? `<span class="fact t-neutral">${icon("signal", 12)}signal</span>` : ""}</div></div>
+    <table class="grid fixed"><colgroup><col style="width:26%"><col style="width:34%"><col style="width:28%"><col style="width:12%"></colgroup>
+    <thead><tr><th>Platform</th><th>Service now</th><th>Timetable</th><th>Dwell</th></tr></thead><tbody>` +
+    s.platforms.map((p) => `<tr><td class="name" data-label="Platform"><div>${esc(p.name)}</div></td>
+      <td data-label="Service now"><div>${serviceCell(p, false)}</div></td>
+      <td data-label="Timetable"><div>${esc(p.timetable)}<span class="two">${esc(p.timezone)}</span></div></td>
+      <td data-label="Dwell" class="num"><div>${esc(p.dwell)}</div></td></tr>`).join("") + `</tbody></table></section>`).join("");
+  const projRows = proj ? proj.stops.flatMap((s) => s.platforms.map((p) => `<tr>
+      <td data-label="Stop"><div>${esc(s.name)}</div></td><td class="name" data-label="Platform"><div>${esc(p.name)}</div></td>
+      <td data-label="Departs" class="num"><div>${esc(whenFull(p.start))}<span class="two">${esc(rel(p.start))}</span></div></td>
+      <td data-label="Done by" class="num"><div>${esc(whenFull(p.end))}</div></td>
+      <td data-label="Held" class="num"><div>${p.held ? esc(p.held) : "<span class='muted'>—</span>"}</div></td></tr>`)).join("")
+    : `<tr><td colspan="5">${esc(projErr)}</td></tr>`;
   main.innerHTML = `
-    <div class="card dep-head"><div><div class="title">Timetable</div>
-      <div class="meta"><span>rollback scope: ${esc(state.config.rollback_scope)}</span><span>Slack: ${state.config.slack ? "on" : "off"}</span></div></div></div>
-    <div class="section-title">Route</div>
-    ${renderLine(null)}
-    <div class="section-title">Service right now</div>
-    <div class="card table-wrap"><table><tr><th>Stop</th><th>Platform</th><th>Timetable</th><th>Now</th><th>Next change</th><th>Dwell</th></tr>${rows}</table></div>
-    <div class="section-title">If a train departed now (projected)</div>
-    <div class="card table-wrap"><table><tr><th>Stop</th><th>Platform</th><th>Departs</th><th>Done</th><th>Held</th></tr>${projRows}</table></div>`;
+    <div class="page-head"><h1>Timetable</h1>
+      <div class="meta"><span>Rollback scope: ${esc(cfg.rollback_scope)}</span><span>Slack: ${cfg.slack ? "on" : "off"}</span>
+        <span>Times in your timezone unless marked</span></div></div>
+    <div class="tiles">
+      <div class="tile"><div class="label">In service now</div>
+        <div class="value num">${open} <span class="of">of ${all.length} platforms</span></div>
+        <div style="margin-top:10px">${meter({ succeeded: open }, all.length, true)}</div></div>
+      <div class="tile"><div class="label">Next opening</div>
+        <div class="value">${nextChange ? esc(nextChange.name) : "—"}</div>
+        <div class="sub">${nextChange ? `${esc(when(nextChange.next_start, nextChange.timezone))} · ${esc(rel(nextChange.next_start))}` : "Everything is in service"}</div></div>
+      <div class="tile"><div class="label">Route</div>
+        <div class="value num">${cfg.stops.length} <span class="of">stops</span></div>
+        <div class="sub">${all.length} platforms · ${cfg.stops.filter((s) => s.signal).length} with a signal</div></div>
+      <div class="tile"><div class="label">If departing now</div>
+        <div class="value num">${lastEnd ? esc(dur(new Date().toISOString(), lastEnd)) : "—"}</div>
+        <div class="sub">${lastEnd ? `Arrives ${esc(whenFull(lastEnd))}` : ""}</div></div>
+    </div>
+    <div class="section-title">Route</div>${renderRoute(null)}
+    <div class="section-title">Platforms</div>${tables}
+    <div class="section-title">Projected departures <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">if a train left now</span></div>
+    <div class="card"><table class="grid"><thead><tr><th>Stop</th><th>Platform</th><th>Departs</th><th>Done by</th><th>Held</th></tr></thead>
+      <tbody>${projRows}</tbody></table></div>`;
+  main.querySelectorAll("[data-jump]").forEach((b) => b.onclick = () =>
+    document.getElementById("stop-" + b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }));
 }
 
-// ---- actions ----------------------------------------------------------------
+// ---- actions --------------------------------------------------------------------
 async function doAction(act) {
-  const dep = state.dep;
-  const v = esc(dep.version);
+  const dep = S.dep, v = esc(dep.version);
   let ok, call;
   if (act === "brake") {
-    ok = await confirmAction(`Pull the emergency brake on ${dep.version}?`, `<p>The train stops at its next checkpoint (within a few seconds). Platforms that are mid-deploy are marked aborted. Nothing is rolled back automatically. You can resume the journey later.</p>`, "Pull the brake", "danger");
+    ok = await confirmAction(`Pull the emergency brake on ${dep.version}?`,
+      `<p>The train stops at its next checkpoint, within a few seconds. Platforms that are mid-deploy are marked aborted.</p>
+       <p>Nothing is rolled back automatically, and you can resume the journey later.</p>`, "Pull the brake", "danger");
     call = () => api("/api/departures/brake", { version: dep.version });
   } else if (act === "clear-signal") {
     const s = dep.signal_at;
-    const platforms = state.config.stops.find((x) => x.name === s)?.platforms.map((p) => p.name).join(", ");
-    ok = await confirmAction(`Clear the signal at “${s}”?`, `<p>This lets <strong>${v}</strong> proceed to: <strong>${esc(platforms)}</strong>.</p><p class="hint">Recorded as cleared by <strong>${esc(state.whoami?.user || "anonymous")}</strong>.</p>`, "Clear signal", "warn");
+    const plats = (S.config.stops.find((x) => x.name === s)?.platforms || []).map((p) => p.name).join(", ");
+    ok = await confirmAction(`Clear the signal at “${s}”?`,
+      `<p><strong>${v}</strong> will proceed to: <strong>${esc(plats)}</strong>.</p>
+       <p class="hint">Recorded as cleared by <strong>${esc(S.whoami?.user || "anonymous")}</strong>.</p>`, "Clear signal", "warn");
     call = () => api("/api/departures/clear-signal", { version: dep.version, stop: s });
   } else if (act === "resume" || act === "retry") {
     const retry = act === "retry";
     ok = await confirmAction(retry ? `Retry failed platforms of ${dep.version}?` : `Resume ${dep.version}?`,
-      `<p>Platforms that already succeeded are skipped. ${retry ? "Failed and rolled-back platforms are deployed again." : ""}</p>`, retry ? "Retry" : "Resume");
+      `<p>Platforms that already succeeded are skipped.${retry ? " Failed and rolled-back platforms are deployed again." : ""}</p>`,
+      retry ? "Retry" : "Resume");
     call = () => api("/api/departures/resume", { version: dep.version, retry_failed: retry });
   }
   if (!ok) return;
@@ -525,7 +866,7 @@ async function doAction(act) {
 async function openDepart() {
   const d = $("departDialog");
   $("dpVersion").value = "";
-  const lastGood = state.departures.find((x) => x.status === "succeeded");
+  const lastGood = S.deps.find((x) => x.status === "succeeded");
   $("dpPrev").value = lastGood ? lastGood.version : "";
   $("dpDry").checked = false;
   d.returnValue = "";
@@ -533,11 +874,11 @@ async function openDepart() {
   $("dpVersion").focus();
   try {
     const t = await api("/api/timetable");
-    $("dpTimetable").innerHTML = `<table><tr><th>Stop</th><th>Platform</th><th>Projected departure</th></tr>` +
-      t.stops.flatMap((s) => s.platforms.map((p) => `<tr><td>${esc(s.name)}</td><td>${esc(p.name)}</td><td>${esc(fmtTime(p.start))}</td></tr>`)).join("") + `</table>`;
-  } catch (e) { $("dpTimetable").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+    $("dpTimetable").innerHTML = `<table class="grid"><thead><tr><th>Stop</th><th>Platform</th><th>Projected departure</th></tr></thead><tbody>` +
+      t.stops.flatMap((s) => s.platforms.map((p) => `<tr><td data-label="Stop"><div>${esc(s.name)}</div></td><td class="name" data-label="Platform"><div>${esc(p.name)}</div></td>
+        <td data-label="Departs" class="num"><div>${esc(whenFull(p.start))} <span class="muted">(${esc(rel(p.start))})</span></div></td></tr>`)).join("") + `</tbody></table>`;
+  } catch (e) { $("dpTimetable").innerHTML = `<div class="empty small">${esc(e.message)}</div>`; }
 }
-
 $("departDialog").addEventListener("close", async () => {
   if ($("departDialog").returnValue !== "ok") return;
   const version = $("dpVersion").value.trim();
@@ -548,69 +889,65 @@ $("departDialog").addEventListener("close", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-// ---- navigation & polling ---------------------------------------------------
+// ---- navigation & polling ---------------------------------------------------------
 function hashVersion() {
   const m = location.hash.match(/(?:departure|run)=([^&]+)/);
   return m ? decodeURIComponent(m[1]) : null;
 }
-
 function select(version) {
-  state.selected = version || null;
-  state.dep = null;
-  state.tab = "events";
+  S.selected = version || null;
+  S.dep = null;
+  S.tab = "events";
   history.replaceState(null, "", version ? "#departure=" + encodeURIComponent(version) : "#");
-  renderDepartures();
+  renderSidebar();
   if (version) { renderDeparture(); refreshDeparture(); } else renderOverview();
+  $("main").focus({ preventScroll: true });
+  window.scrollTo(0, 0);
 }
-
 async function refreshDeparture() {
-  if (!state.selected) return;
-  const v = state.selected;
+  if (!S.selected) return;
+  const v = S.selected;
   try {
     const dep = await api("/api/departure?version=" + encodeURIComponent(v));
-    if (state.selected !== v) return;
-    state.dep = dep;
+    if (S.selected !== v) return;
+    S.dep = dep;
     // Don't re-render while a dialog is open or text is selected (keeps the UI usable).
     if (!document.querySelector("dialog[open]") && !String(window.getSelection())) renderDeparture();
   } catch (e) {
-    if (e.status === 404) { state.dep = { version: v, starting: true, log: "" }; renderDeparture(); }
+    if (e.status === 404) { S.dep = { version: v, starting: true, log: "" }; renderDeparture(); }
   }
 }
-
 async function refreshAll() {
-  if (state.inflight) return;
-  state.inflight = true;
+  if (S.busy) return;
+  S.busy = true;
   try {
-    const [config, departures] = await Promise.all([api("/api/config"), api("/api/departures")]);
-    state.config = config;
-    state.departures = departures;
+    const [config, deps] = await Promise.all([api("/api/config"), api("/api/departures")]);
+    S.config = config;
+    S.deps = deps;
     $("trainName").textContent = "· " + config.train;
-    renderDepartures();
-    if (state.selected) await refreshDeparture();
+    document.title = `${config.train} · traintraintrain`;
+    renderSidebar();
+    if (S.selected) await refreshDeparture();
     else if (!document.querySelector("dialog[open]")) await renderOverview();
   } catch (e) {
     if (!/Authentication/.test(e.message)) toast("Can't reach the traintraintrain server: " + e.message, true);
-  } finally { state.inflight = false; }
+  } finally { S.busy = false; }
 }
-
 async function initUser() {
-  try { state.whoami = await api("/api/whoami"); } catch { return; }
-  const chip = $("userChip");
-  const viaProxy = state.whoami.user !== "anonymous" && state.whoami.user !== (store.get("dt-user") || "");
-  if (viaProxy) { chip.textContent = "Signed in as " + state.whoami.user; return; }
-  chip.innerHTML = `<label for="userName">You:</label><input id="userName" placeholder="your name" value="${esc(store.get("dt-user") || "")}">`;
-  $("userName").onchange = async (e) => { store.set("dt-user", e.target.value.trim()); state.whoami = await api("/api/whoami"); };
+  try { S.whoami = await api("/api/whoami"); } catch { return; }
+  const chipEl = $("userChip");
+  const viaProxy = S.whoami.user !== "anonymous" && S.whoami.user !== (store.get("dt-user") || "");
+  if (viaProxy) { chipEl.textContent = "Signed in as " + S.whoami.user; return; }
+  chipEl.innerHTML = `<label for="userName">You</label><input id="userName" placeholder="your name" value="${esc(store.get("dt-user") || "")}">`;
+  $("userName").onchange = async (e) => { store.set("dt-user", e.target.value.trim()); S.whoami = await api("/api/whoami"); };
 }
 
 $("departBtn").onclick = openDepart;
 $("overviewNav").onclick = () => select(null);
-window.addEventListener("hashchange", () => {
-  const v = hashVersion();
-  if (v !== state.selected) select(v);
-});
+window.addEventListener("hashchange", () => { const v = hashVersion(); if (v !== S.selected) select(v); });
 
 (async function init() {
-  state.selected = hashVersion();
+  S.selected = hashVersion();
   await initUser();
   await refreshAll();
   setInterval(refreshAll, 4000);
