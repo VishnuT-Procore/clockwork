@@ -15,8 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+from . import checks, connectors, driver, live
 from . import config as config_mod
-from . import driver, live
 from ._compat import env
 from .notify import Notifier, SlackNotifier, build_notifier
 from .timetable import format_duration, parse_duration
@@ -124,6 +124,8 @@ def cmd_board(args, cfg) -> int:
     for name, p in st["platforms"].items():
         print(f"  {p['stop']:<12} {name:<18} {_ver(p.get('from_version'), p.get('from_sha')):<26} "
               f"{_label(p['status']):<16} {p['message']}")
+    if args.steps:
+        _print_steps(st)
     if args.events:
         print()
         for e in st["events"][-args.events:]:
@@ -283,6 +285,104 @@ def cmd_pending(args, cfg) -> int:
     for g in waiting:
         _print_changes(g, f"{', '.join(g['platforms'])}: " if len(waiting) > 1 else "", args.changes, "compare")
     return 0
+
+
+STEP_MARK = {"passed": "ok", "failed": "FAILED", "warned": "warned", "running": "running", "pending": "-",
+             "skipped": "skipped", "stopped": "stopped"}
+
+
+def _print_steps(st: dict) -> None:
+    for name, p in st["platforms"].items():
+        if not p.get("steps"):
+            continue
+        print(f"\n  {name}")
+        for s in p["steps"]:
+            status = STEP_MARK.get(s.get("status"), s.get("status"))
+            metrics = ", ".join(f"{k}={v}" for k, v in (s.get("metrics") or {}).items())
+            print(f"    {status:<8} {s['name']:<20} {metrics}")
+            for c in s.get("checks") or []:
+                why = f"  ({c['why']})" if c["why"] else ""
+                print(f"             {'ok ' if c['ok'] else 'NO '} {c['rule']}{why}")
+            if s.get("status") in ("failed", "warned") and s.get("message"):
+                print(f"             {s['message']}")
+
+
+def _steps_using(cfg, connector: str):
+    """(where, step) for every step that uses a connector, in route order."""
+    seen = []
+    for p in cfg.platforms:
+        for s in p.steps:
+            if s.connector == connector and not any(s is x for _, x in seen):
+                seen.append((p, s))
+    if cfg.rollback_step is not None and cfg.rollback_step.connector == connector:
+        seen.append((cfg.platforms[0], cfg.rollback_step))
+    return seen
+
+
+def cmd_connectors_list(args, cfg) -> int:
+    if not cfg.connectors:
+        print("no connectors declared (add a `connectors:` section)")
+        return 0
+    print(f"  {'NAME':<16} {'TYPE':<12} {'USED BY':<34} SETTINGS")
+    for name, c in cfg.connectors.items():
+        used = sorted({s.name for _, s in _steps_using(cfg, name)}) or ["-"]
+        print(f"  {name:<16} {c.type_name:<12} {', '.join(used)[:34]:<34} {c.describe().split(' ', 1)[-1]}")
+    print(f"\nconnector types available: {', '.join(sorted(connectors.types()))}")
+    return 0
+
+
+def cmd_connectors_test(args, cfg) -> int:
+    """Run one step's connector call (read-only unless --for-real) and show metrics and checks."""
+    if args.name not in cfg.connectors:
+        print(f"no connector named {args.name!r} (have: {', '.join(cfg.connectors) or 'none'})", file=sys.stderr)
+        return 1
+    connector = cfg.connectors[args.name]
+    candidates = _steps_using(cfg, args.name)
+    if args.step:
+        candidates = [(p, s) for p, s in candidates if s.name == args.step]
+    if not candidates:
+        print(f"no step uses {args.name!r}" + (f" with the name {args.step!r}" if args.step else ""), file=sys.stderr)
+        return 1
+    names = sorted({s.name for _, s in candidates})
+    if len(names) > 1:
+        print(f"several steps use {args.name!r}; pick one with --step: {', '.join(names)}", file=sys.stderr)
+        return 1
+    default_platform, step = candidates[0]
+    platforms = {p.name: p for p in cfg.platforms}
+    platform = platforms.get(args.platform) if args.platform else default_platform
+    if platform is None:
+        print(f"unknown platform {args.platform!r}", file=sys.stderr)
+        return 1
+    read_only = connector.step_is_read_only(step.settings)
+    if not read_only and not args.for_real and connector.type_name != "driver":
+        print(f"step {step.name!r} may change things ({connector.type_name}); add --for-real to run it",
+              file=sys.stderr)
+        return 1
+    known = live.recorded(cfg, backend_for(cfg)).get(platform.name) or {}
+    ctx = connectors.Context(
+        train=cfg.name, platform=platform.name, stop=platform.stop, vars=dict(platform.vars),
+        version=args.version or known.get("version") or "", sha=None,
+        previous_version=args.previous_version or known.get("version"), previous_sha=known.get("sha"),
+        departure=args.version, triggered_by=getpass.getuser(),
+        dry_run=connector.type_name == "driver" and not args.for_real, runner=shell_runner)
+    print(f"step {step.name!r} on {platform.name} via {args.name} ({connector.type_name})"
+          + (" as a dry run" if ctx.dry_run else ""))
+    result = connector.safe_call(step.settings, ctx, step.timeout)
+    print(f"\n{'ok' if result.ok else 'FAILED'}: {result.message}")
+    if result.metrics:
+        print("\nmetrics:")
+        for k, v in result.metrics.items():
+            print(f"  {k} = {v!r}")
+    passed = result.ok
+    if result.ok and step.expect:
+        print("\nchecks:")
+        for r in checks.evaluate(step.expect, result.metrics):
+            print(f"  {'ok ' if r.ok else 'NO '} {r.rule}" + (f"  ({r.why})" if r.why else ""))
+            passed = passed and r.ok
+    if args.verbose_log and result.log:
+        print("\nlog:\n" + result.log)
+    print(f"\nstep {'would pass' if passed else 'would FAIL'}")
+    return 0 if passed else 1
 
 
 def cmd_contract_schema(args, cfg) -> int:
@@ -472,6 +572,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--version", required=True)
     sp.add_argument("--events", type=int, default=10, help="show the last N events")
     sp.add_argument("--changes", action="store_true", help="list what's in this release")
+    sp.add_argument("--steps", action="store_true", help="list each platform's steps, metrics and checks")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_board)
 
@@ -501,6 +602,21 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("pending", help="what's on the head branch (changes.head) but not live yet")
     sp.add_argument("--changes", action="store_true", help="list the changes, not just count them")
     sp.set_defaults(func=cmd_pending)
+
+    cn = sub.add_parser("connectors", help="the APIs and data sources steps use: list or test them")
+    cns = cn.add_subparsers(dest="connectors_cmd", required=True, metavar="ACTION")
+    sp = cns.add_parser("list", help="the declared connectors and the steps that use them")
+    sp.set_defaults(func=cmd_connectors_list)
+    sp = cns.add_parser("test", help="run one step's call and show its metrics and checks")
+    sp.add_argument("name", help="the connector's name")
+    sp.add_argument("--step", help="which step (when several use the connector)")
+    sp.add_argument("--platform", help="default: the first platform whose pipeline has the step")
+    sp.add_argument("--version", help="default: the platform's live version")
+    sp.add_argument("--previous-version")
+    sp.add_argument("--for-real", action="store_true",
+                    help="allow steps that may change things (HTTP POST, commands); drivers get dry_run: false")
+    sp.add_argument("--log", dest="verbose_log", action="store_true", help="also print the call's raw log")
+    sp.set_defaults(func=cmd_connectors_test)
 
     ct = sub.add_parser("contract", help="the driver contract: print its schema, or test your driver")
     cts = ct.add_subparsers(dest="contract_cmd", required=True, metavar="ACTION")

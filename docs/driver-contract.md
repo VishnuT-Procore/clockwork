@@ -64,6 +64,7 @@ Then, per action:
 | `live_version` | `platform`, `stop`, `vars` | when a train departs, in previews, `pending` and `live --probe` |
 | `resolve` | `version` | to turn a version (tag, branch) into a commit SHA |
 | `changes` | `version`, `sha`, `previous_version`, `previous_sha`, `platforms` | once per group of platforms that run the same version |
+| `step` | everything `deploy` has, plus `step` (its name), `params` and `context` (`{"steps": {name: {"metrics": {...}}}}`, earlier steps' metrics) | for pipeline steps with `run:` (see [connectors.md](connectors.md)) |
 
 `vars` are the platform's `vars` from `train.yaml` (e.g. `{"cluster": "use1"}`). `sha`
 fields are `null` when unknown.
@@ -94,6 +95,7 @@ And, when `ok` is true:
 | `deploy`, `inspect`, `rollback` | nothing else |
 | `live_version` | `version` (required), `sha` (optional) |
 | `resolve` | `sha` (required, 7–64 hex characters) |
+| `step` | `metrics` (optional): an object of names to numbers, strings, true/false or null, checked by the step's `expect` rules |
 | `changes` | `changes` (required): a list of `{"id", "title", "url", "author"}` (only `title` is required, newest first), and optionally `url`, a link to the full comparison |
 
 Examples:

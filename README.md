@@ -344,6 +344,51 @@ The UI's Timetable page shows a **Live now** column and the same history. Existi
 installs need nothing: until a platform has a record, its version is worked out from past
 departures. With Postgres, the new tables are created automatically, or by `db migrate`.
 
+## Steps, checks and connectors
+
+Every platform runs `deploy`, then `dwell`, unless you give it **steps**. Steps can check
+a database, call your deploy API, wait, read Prometheus or Databricks, or run a script.
+**`expect`** rules on the numbers they return decide whether the train carries on. The
+systems are declared once as **connectors**, with secrets taken from env vars:
+
+```yaml
+connectors:
+  payments-db: {type: postgres, url: "${PAYMENTS_DB_URL}"}
+  prometheus:  {type: prometheus, url: https://prometheus.internal}
+  deployer:    {type: http, base_url: https://deployer.internal/api, headers: {Authorization: "Bearer ${DEPLOYER_TOKEN}"}}
+
+train:
+  steps:
+    - name: db-ready
+      use: payments-db
+      query: "select pending_migrations, replication_lag_s from deploy_status where region = :platform"
+      expect: ["pending_migrations == 0", "replication_lag_s < 30"]
+    - name: deploy
+      use: deployer
+      request: {method: POST, path: "/deploy/{platform}", json: {version: "{version}"}}
+    - wait: 2m
+    - name: error-rate
+      use: prometheus
+      query: 'sum(rate(http_errors{region="{platform}"}[5m])) / sum(rate(http_requests{region="{platform}"}[5m])) * 100'
+      as: error_rate
+      expect: ["error_rate < 1"]
+      until: 10m                     # retry every 30s until it passes, for up to 10m
+    - dwell
+```
+
+- **Built-in connector types:** `http`, `postgres` (read-only, bind parameters),
+  `prometheus`, `databricks` (SQL warehouse queries and Jobs runs), `driver` and
+  `command`. More can be added as plugins.
+- **Pipelines per stop or platform:** a stop or platform can set its own `steps:`.
+- **Checking over time:** `until` waits for the rules to pass; `hold` requires them to
+  keep passing.
+- **Soft checks:** `on_fail: warn` records a failure and carries on.
+- **What you see:** the UI shows each platform's steps with their numbers and which rules
+  passed. `traintraintrain connectors test <name>` tries a step's call without deploying.
+
+The full guide is in [docs/connectors.md](docs/connectors.md), including how to write a
+connector plugin.
+
 ## Plugging in your deploy system: a driver
 
 Each step can be a shell command (`deploy_command`, `inspection_command`, …), or one

@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 CONTRACT_VERSION = 1
 ACTIONS = ("deploy", "inspect", "rollback", "live_version", "resolve", "changes")
+# A custom pipeline step (`steps:` with `run:`); not one of the built-in actions above.
+STEP = "step"
 LOG_TAIL = 4000
 
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/-]{0,99}$")
@@ -125,6 +127,12 @@ def validate_reply(action: str, data: dict) -> list[str]:
     elif action == "resolve":
         if not (isinstance(data.get("sha"), str) and _SHA_RE.match(data["sha"])):
             problems.append('"sha" must be a commit SHA (7-64 hex characters)')
+    elif action == STEP:
+        metrics = data.get("metrics", {})
+        if not isinstance(metrics, dict) or any(
+                not isinstance(k, str) or not (v is None or isinstance(v, (str, int, float, bool)))
+                for k, v in metrics.items()):
+            problems.append('"metrics" must be an object of names to numbers, strings, true/false or null')
     elif action == "changes":
         items = data.get("changes")
         if not isinstance(items, list):
@@ -147,10 +155,15 @@ def _is_url(value) -> bool:
 
 
 def call(cfg: TrainConfig, request: dict, timeout: float, transport: Transport | None = None) -> DriverReply:
-    """Run the driver for one request. Never raises: every problem is a failed reply."""
+    """Run the train's driver for one request. Never raises: every problem is a failed reply."""
+    return call_with(cfg.driver, request, timeout, transport)
+
+
+def call_with(drv: Driver, request: dict, timeout: float, transport: Transport | None = None) -> DriverReply:
+    """Run a driver (the train's, or a `type: driver` connector's) for one request."""
     action = request["action"]
     transport = transport or TRANSPORT
-    rc, out, err = transport(cfg.driver.argv, json.dumps(request), _env(request), timeout, cfg.driver.cwd)
+    rc, out, err = transport(drv.argv, json.dumps(request), _env(request), timeout, drv.cwd)
     log = err.strip()[-LOG_TAIL:]
     data = parse_reply(out)
     if data is None:
@@ -180,7 +193,7 @@ _STR = {"type": "string"}
 _OPT_STR = {"type": ["string", "null"]}
 _STEP = {"platform": _STR, "stop": _STR, "vars": {"type": "object"}, "version": _STR, "sha": _OPT_STR,
          "previous_version": _OPT_STR, "previous_sha": _OPT_STR}
-_COMMON = {"contract": {"const": CONTRACT_VERSION}, "action": {"enum": list(ACTIONS)}, "train": _STR,
+_COMMON = {"contract": {"const": CONTRACT_VERSION}, "action": {"enum": [*ACTIONS, STEP]}, "train": _STR,
            "departure": _OPT_STR, "triggered_by": _OPT_STR, "dry_run": {"type": "boolean"}}
 
 JSON_SCHEMA = {
@@ -194,6 +207,8 @@ JSON_SCHEMA = {
             "resolve": {"version": _STR},
             "changes": {"version": _STR, "sha": _OPT_STR, "previous_version": _STR, "previous_sha": _OPT_STR,
                         "platforms": {"type": "array", "items": _STR}},
+            "step": {**_STEP, "step": _STR, "params": {"type": "object"},
+                     "context": {"type": "object", "description": "earlier steps' metrics: {steps: {name: {...}}}"}},
         },
     },
     "reply": {
@@ -204,6 +219,8 @@ JSON_SCHEMA = {
             "deploy": {}, "inspect": {}, "rollback": {},
             "live_version": {"required_when_ok": ["version"], "version": _STR, "sha": _OPT_STR},
             "resolve": {"required_when_ok": ["sha"], "sha": _STR},
+            "step": {"metrics": {"type": "object", "additionalProperties": {
+                "type": ["number", "string", "boolean", "null"]}}},
             "changes": {"required_when_ok": ["changes"], "url": _OPT_STR, "changes": {
                 "type": "array", "items": {"type": "object", "required": ["title"], "properties": {
                     "id": _STR, "title": _STR, "url": _STR, "author": _STR}}}},

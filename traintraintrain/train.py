@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from . import driver, live
+from . import checks, connectors, driver, live
 from ._compat import LEGACY_STATUS
 from .config import Platform, Stop, TrainConfig
 from .notify import Notifier, build_notifier
 from .storage import BRAKE, SIGNAL, Backend, backend_for
+from .steps import Step
 from .timetable import NoServiceError, format_duration
 
 log = logging.getLogger("traintraintrain")
@@ -413,6 +414,8 @@ class Train:
     _ACTIONS = {"deploy": "deploy", "inspection": "inspect", "rollback": "rollback"}
 
     def _has(self, kind: str) -> bool:
+        if kind == "rollback" and self.cfg.rollback_step is not None:
+            return True
         template = {"deploy": self.cfg.deploy_command, "inspection": self.cfg.inspection_command,
                     "rollback": self.cfg.rollback_command}[kind]
         return bool(template) or self.cfg.handles(self._ACTIONS[kind])
@@ -515,7 +518,10 @@ class Train:
             self.state.event(self.clock.now(), "no rollback_command configured; skipping rollback",
                              platform.name)
             return
-        res = self._run("rollback", self.cfg.rollback_command, platform, platform.deploy_timeout)
+        if self.cfg.rollback_step is not None:
+            res = self._rollback_with_connector(platform)
+        else:
+            res = self._run("rollback", self.cfg.rollback_command, platform, platform.deploy_timeout)
         status = ROLLED_BACK if res.returncode == 0 else ROLLBACK_FAILED
         target = self._rollback_target(platform.name)
         target_sha = self._rollback_sha(platform.name)
@@ -535,14 +541,14 @@ class Train:
         name = platform.name
         try:
             self._wait_for_service(platform)
+            pipeline = {"steps": [{**s.summary(), "status": "pending"} for s in platform.steps]} \
+                if platform.custom_steps else {}
             self.state.update_platform(name, status=DEPLOYING, started_at=_iso(self.clock.now()),
-                                       message=f"deploying {self.version}")
+                                       message=f"deploying {self.version}", **pipeline)
             self._notify("platform_deploying", platform=name)
-            res = self._run("deploy", self.cfg.deploy_command, platform, platform.deploy_timeout)
-            if res.returncode != 0:
-                raise PlatformFailed(self._failure("deploy failed", res), res.output)
-            self._check_brake()
-            self._dwell(platform)
+            metrics: dict[str, dict] = {}   # each finished call step's metrics, for later steps
+            for i, step in enumerate(platform.steps):
+                self._run_step(platform, i, step, metrics)
             self.state.update_platform(name, status=SUCCEEDED, finished_at=_iso(self.clock.now()),
                                        message=f"{self.version} healthy")
             self._record_live(name, self.version, live.DEPLOYED, self._rollback_target(name),
@@ -571,6 +577,128 @@ class Train:
             if self.cfg.rollback_scope != "none":
                 self._rollback(platform, str(e))
             return FAILED
+
+    # ---- pipeline steps ----------------------------------------------------
+
+    def _deploy(self, platform: Platform) -> None:
+        res = self._run("deploy", self.cfg.deploy_command, platform, platform.deploy_timeout)
+        if res.returncode != 0:
+            raise PlatformFailed(self._failure("deploy failed", res), res.output)
+        self._check_brake()
+
+    def _step_state(self, platform: Platform, i: int, **fields) -> None:
+        if not platform.custom_steps:
+            return
+        with self.state.lock:
+            self.state.data["platforms"][platform.name]["steps"][i].update(fields)
+            self.state.save()
+
+    def _context(self, platform: Platform, metrics: dict) -> connectors.Context:
+        return connectors.Context(
+            train=self.cfg.name, platform=platform.name, stop=platform.stop, vars=dict(platform.vars),
+            version=self.version, sha=self.sha, previous_version=self._rollback_target(platform.name),
+            previous_sha=self._rollback_sha(platform.name), departure=self.version,
+            triggered_by=os.environ.get("TRAINTRAINTRAIN_TRIGGERED_BY"), dry_run=self.dry_run,
+            steps=metrics, runner=self.runner)
+
+    def _run_step(self, platform: Platform, i: int, step: Step, metrics: dict) -> None:
+        name = platform.name
+        self._step_state(platform, i, status="running", started_at=_iso(self.clock.now()))
+        try:
+            if step.kind == "deploy":
+                self._deploy(platform)
+            elif step.kind == "dwell":
+                self._dwell(platform)
+            elif step.kind == "wait":
+                msg = f"waiting {format_duration(step.duration)}"
+                self.state.update_platform(name, status=DEPLOYING, message=msg)
+                self.state.event(self.clock.now(), f"{'[dry-run] ' if self.dry_run else ''}step {step.name}: {msg}",
+                                 name)
+                if not self.dry_run:
+                    self._sleep(step.duration.total_seconds())
+            else:
+                status = self._call_step(platform, i, step, metrics)
+                self._step_state(platform, i, status=status, finished_at=_iso(self.clock.now()))
+                return
+        except PlatformFailed as e:
+            self._step_state(platform, i, status="failed", finished_at=_iso(self.clock.now()), message=str(e))
+            raise
+        except BrakeApplied:
+            self._step_state(platform, i, status="stopped", finished_at=_iso(self.clock.now()))
+            raise
+        self._step_state(platform, i, status="passed", finished_at=_iso(self.clock.now()))
+
+    def _call_step(self, platform: Platform, i: int, step: Step, metrics: dict) -> str:
+        """Run a connector step until it passes, fails, or its until/hold window ends.
+
+        Returns the step's final status (passed, warned, skipped); raises PlatformFailed.
+        """
+        name = platform.name
+        connector = self.cfg.connectors[step.connector]
+        if self.dry_run:
+            self.state.event(self.clock.now(), f"[dry-run] step {step.name}: {connector.type_name} "
+                             f"connector {step.connector!r}", name)
+            return "skipped"
+        self.state.update_platform(name, status=DEPLOYING, message=f"running step {step.name}")
+        ctx = self._context(platform, metrics)
+        started, attempts = self.clock.now(), 0
+        while True:
+            attempts += 1
+            self._check_brake()
+            result = connector.safe_call(step.settings, ctx, step.timeout)
+            results = checks.evaluate(step.expect, result.metrics) if result.ok else []
+            passed = result.ok and all(r.ok for r in results)
+            reason = result.message if not result.ok else "; ".join(
+                f"{r.rule} ({r.why})" for r in results if not r.ok)
+            metrics[step.name] = result.metrics
+            self._step_state(platform, i, metrics=result.metrics, checks=[r.as_dict() for r in results],
+                             message=result.message, attempts=attempts)
+            shown = ", ".join(f"{k}={v}" for k, v in result.metrics.items())
+            self.state.event(self.clock.now(), f"step {step.name}: {shown + ' — ' if shown else ''}"
+                             f"{'passed' if passed else 'failed: ' + reason}", name)
+            elapsed = self.clock.now() - started
+            if step.hold is not None:
+                if not passed:
+                    return self._step_failed(platform, i, step, f"stopped passing after {format_duration(elapsed)}: "
+                                             f"{reason}", result)
+                if elapsed >= step.hold:
+                    return "passed"
+                self._sleep(min(step.every, step.hold - elapsed).total_seconds())
+            elif not passed and step.until is not None:
+                if elapsed + step.every > step.until:
+                    return self._step_failed(platform, i, step, f"still failing after {format_duration(step.until)}: "
+                                             f"{reason}", result)
+                self.state.update_platform(name, message=f"step {step.name}: waiting for {reason}")
+                self._sleep(step.every.total_seconds())
+            elif not passed:
+                return self._step_failed(platform, i, step, reason, result)
+            else:
+                return "passed"
+
+    def _step_failed(self, platform: Platform, i: int, step: Step, reason: str, result) -> str:
+        if step.on_fail == "warn":
+            self.state.event(self.clock.now(), f"step {step.name} failed, carrying on (on_fail: warn): {reason}",
+                             platform.name)
+            self._step_state(platform, i, message=reason)
+            return "warned"
+        raise PlatformFailed(f"step {step.name} failed: {reason}", result.log or "")
+
+    def _rollback_with_connector(self, platform: Platform) -> CommandResult:
+        step = self.cfg.rollback_step
+        connector = self.cfg.connectors[step.connector]
+        ctx = self._context(platform, {})
+        if self.dry_run:
+            self.state.event(self.clock.now(), f"[dry-run] rollback: {connector.type_name} connector "
+                             f"{step.connector!r}", platform.name)
+            return CommandResult(0, "")
+        self.state.event(self.clock.now(), f"rollback: {connector.type_name} connector {step.connector!r} "
+                         f"to {ctx.previous_version or '(unknown)'}", platform.name)
+        result = connector.safe_call(step.settings, ctx, step.timeout)
+        failed = [r for r in checks.evaluate(step.expect, result.metrics) if not r.ok] if result.ok else []
+        if result.ok and not failed:
+            return CommandResult(0, result.log)
+        reason = result.message if not result.ok else "; ".join(f"{r.rule} ({r.why})" for r in failed)
+        return CommandResult(1, result.log, reason)
 
     # ---- train -------------------------------------------------------------
 

@@ -16,6 +16,8 @@ Environment:
   CHANGES_PATHS   for monorepos: limit `changes` to these folders, e.g. "services/pay libs/billing"
   FAIL_DEPLOY     "platform:version" pairs that should fail, e.g. "ap-northeast-1:v1.4.0"
   FAKE_CLUSTER    where to keep the pretend cluster state (default .fake-cluster.json)
+  ERROR_RATE      what the `error_stats` step reports (default 0.2); e.g. "us-west-2-canary=3.5,0.2"
+
 """
 import json
 import os
@@ -111,8 +113,37 @@ def changes(req):
     return {"ok": True, "changes": items}
 
 
+# ---- pipeline steps (`steps:` with `run: <name>`), replying with metrics -------------
+
+def db_stats(req):
+    """Pretend database stats; a real one would query the database for req["platform"]."""
+    return {"ok": True, "metrics": {"pending_migrations": 0, "replication_lag_s": 4.2}}
+
+
+def error_stats(req):
+    """Pretend error rate, set per platform with ERROR_RATE ("canary=3.5,0.2": canary 3.5, others 0.2)."""
+    rates, default = {}, 0.2
+    for part in os.environ.get("ERROR_RATE", "").split(","):
+        if "=" in part:
+            name, value = part.split("=", 1)
+            rates[name.strip()] = float(value)
+        elif part.strip():
+            default = float(part)
+    return {"ok": True, "metrics": {"error_rate": rates.get(req["platform"], default)}}
+
+
+STEPS = {"db_stats": db_stats, "error_stats": error_stats}
+
+
+def step(req):
+    handler = STEPS.get(req["step"])
+    if handler is None:
+        return {"ok": False, "unsupported": True, "message": f"no step called {req['step']!r}"}
+    return handler(req)
+
+
 ACTIONS = {"deploy": deploy, "inspect": inspect, "rollback": rollback,
-           "live_version": live_version, "resolve": resolve, "changes": changes}
+           "live_version": live_version, "resolve": resolve, "changes": changes, "step": step}
 
 
 def main():

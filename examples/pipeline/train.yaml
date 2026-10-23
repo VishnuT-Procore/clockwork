@@ -1,0 +1,86 @@
+# A train whose platforms go through custom steps, using connectors to real systems.
+# See docs/connectors.md. Secrets come from the environment (${...}).
+connectors:
+  payments-db:
+    type: postgres
+    url: ${PAYMENTS_DB_URL}
+  prometheus:
+    type: prometheus
+    url: https://prometheus.internal
+    headers: {Authorization: "Bearer ${PROM_TOKEN:-}"}
+  lakehouse:
+    type: databricks
+    host: https://acme.cloud.databricks.com
+    token: ${DATABRICKS_TOKEN}
+    warehouse_id: abc123def456
+  deployer:
+    type: http
+    base_url: https://deployer.internal/api
+    headers: {Authorization: "Bearer ${DEPLOYER_TOKEN}"}
+    timeout: 30s
+
+train:
+  name: payments-api
+  default_dwell: 30m
+  inspection_interval: 2m
+  inspection_command: "curl -fsS https://{cluster}.payments.internal/healthz"
+  steps: &standard
+    - name: db-ready                       # don't deploy while migrations are pending or replicas lag
+      use: payments-db
+      query: >-
+        select count(*) filter (where not applied) as pending_migrations,
+               coalesce(max(replication_lag_s), 0) as replication_lag_s
+        from deploy_status where region = :platform
+      expect: ["pending_migrations == 0", "replication_lag_s < 30"]
+      until: 15m
+      every: 1m
+    - &deploy
+      name: deploy                         # the deployer API replaces deploy_command
+      use: deployer
+      request: {method: POST, path: "/services/payments/regions/{platform}", json: {version: "{version}", sha: "{sha}"}}
+      metrics: {deploy_id: id}
+    - wait: 2m
+    - name: error-rate                     # wait for the error rate to settle under 1%
+      use: prometheus
+      query: 'sum(rate(http_errors{region="{platform}"}[5m])) / sum(rate(http_requests{region="{platform}"}[5m])) * 100'
+      as: error_rate
+      expect: ["error_rate < 1.0"]
+      until: 10m
+      every: 30s
+    - name: data-quality                   # nothing broken in the lakehouse since the deploy
+      use: lakehouse
+      query: >-
+        select count_if(amount is null) as null_amounts
+        from transactions where region = :platform and ingested_at > current_timestamp() - interval 30 minutes
+      expect: ["null_amounts == 0"]
+      on_fail: warn
+    - dwell                                # inspection_command for default_dwell
+  rollback:
+    use: deployer
+    request: {method: POST, path: "/services/payments/regions/{platform}/rollback", json: {to: "{previous_version}"}}
+
+stops:
+  - name: canary
+    steps:                                 # the canary also runs a load test and must hold steady
+      - *deploy
+      - name: load-test
+        command: ./load-test.sh {platform} {version}
+      - name: canary-error-rate
+        use: prometheus
+        query: 'sum(rate(http_errors{region="{platform}"}[5m])) / sum(rate(http_requests{region="{platform}"}[5m])) * 100'
+        as: error_rate
+        expect: ["error_rate < 0.5"]
+        hold: 20m
+        every: 1m
+    platforms:
+      - {name: us-west-2-canary, vars: {cluster: canary}}
+  - name: atlantic
+    parallel_platforms: 2
+    platforms:
+      - {name: us-east-1, vars: {cluster: use1}}
+      - {name: eu-west-1, vars: {cluster: euw1}}
+  - name: worldwide
+    parallel_platforms: 2
+    platforms:
+      - {name: ap-northeast-1, vars: {cluster: apne1}}
+      - {name: eu-central-1, vars: {cluster: euc1}}

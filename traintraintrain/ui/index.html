@@ -256,6 +256,18 @@ details.grp .commit { padding: 5px 12px; font-size: 13px; grid-template-columns:
 details.grp .grp-foot { padding: 6px 12px 10px; font-size: 13px; }
 .ver-cell code { font-size: .9em; }
 .drift { color: var(--serious); font-weight: 600; }
+.psteps { display: flex; flex-direction: column; gap: 4px; padding: 2px 0 6px; }
+.pstep { display: grid; grid-template-columns: 18px minmax(110px, auto) minmax(0, 1fr); gap: 8px; align-items: start;
+  font-size: 13px; }
+.pstep .ico { color: var(--tone); padding-top: 2px; }
+.pstep .sname { font-weight: 600; white-space: nowrap; }
+.pstep .sdetail { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; color: var(--ink-2); }
+.mchip { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; padding: 1px 7px;
+  border-radius: 6px; background: var(--surface-2); color: var(--ink-2); white-space: nowrap; }
+.mchip.ok { background: var(--good-bg); }
+.mchip.no { background: var(--bad-bg); color: var(--ink); }
+.pstep .why { color: var(--bad); }
+.pstep .muted { font-size: 12.5px; }
 .sha-tag { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; color: var(--ink-3);
   margin-left: 6px; }
 .preview table.grid td, .preview table.grid th { padding: 7px 12px; }
@@ -651,7 +663,7 @@ function renderStops(dep) {
         <td data-label="Took" class="num"><div>${took ? esc(took) : "<span class='muted'>—</span>"}</div></td>
         <td data-label="Notes"><div>${noteFor(cp.name, p, dep)}</div></td></tr>`;
       const detail = p.output ? `<tr class="detail"><td colspan="6"><pre class="out mono">${esc(p.output)}</pre></td></tr>` : "";
-      return main + detail;
+      return main + stepsRow(p) + detail;
     }).join("");
     return `<section class="stop" id="stop-${esc(s.name)}" aria-label="Stop ${esc(s.name)}">
       <div class="stop-head"><span class="idx">${i + 1}</span><h3>${esc(s.name)}</h3>${chip(stopState(s, dep))}
@@ -661,6 +673,37 @@ function renderStops(dep) {
       <thead><tr><th>Platform</th><th>Status</th><th>Timetable</th><th>Started</th><th>Took</th><th>Notes</th></tr></thead>
       <tbody>${rows}</tbody></table></section>`;
   }).join("");
+}
+
+// ---- per-platform pipeline steps -------------------------------------------------
+const STEP_LOOK = { passed: ["good", "check"], failed: ["bad", "x"], warned: ["warn", "alert"], running: ["active", "spin"],
+  pending: ["neutral", "circle"], skipped: ["neutral", "circle"], stopped: ["bad", "stop"] };
+function stepsRow(p) {
+  if (!p.steps || !p.steps.length) return "";
+  const rows = p.steps.map((s) => {
+    const [tone, ico] = STEP_LOOK[s.status] || ["neutral", "circle"];
+    const checks = s.checks || [];
+    const byMetric = Object.fromEntries(checks.map((c) => [c.metric, c]));
+    const chips = Object.entries(s.metrics || {}).filter(([k]) => k !== "status" || byMetric.status).map(([k, v]) => {
+      const c = byMetric[k];
+      const cls = c ? (c.ok ? " ok" : " no") : "";
+      return `<span class="mchip${cls}" title="${esc(c ? c.rule : k)}">${esc(k)} ${esc(String(v))}${
+        c ? ` <span class="muted">(${esc(c.rule.trim().slice(k.length).trim())})</span>` : ""}</span>`;
+    }).join("");
+    const missing = checks.filter((c) => !(c.metric in (s.metrics || {})) && !c.ok)
+      .map((c) => `<span class="why">${esc(c.why)}</span>`).join("");
+    const meta = [s.connector ? esc(s.connector) : "",
+      s.until ? "until " + esc(s.until) : "", s.hold ? "hold " + esc(s.hold) : "",
+      s.attempts > 1 ? `${s.attempts} tries` : "", s.on_fail === "warn" ? "warn only" : ""].filter(Boolean).join(" · ");
+    const pendingRules = !s.metrics && (s.expect || []).length
+      ? (s.expect || []).map((r) => `<span class="mchip">${esc(r)}</span>`).join("") : "";
+    const why = (s.status === "failed" || s.status === "warned") && s.message && !missing
+      ? `<span class="why">${esc(s.message)}</span>` : "";
+    return `<div class="pstep t-${tone}"><span class="ico">${icon(ico, 14, ico === "spin" ? "spin" : "")}</span>
+      <span class="sname">${esc(s.name)}</span>
+      <span class="sdetail">${chips}${pendingRules}${missing}${why}${meta ? `<span class="muted">${meta}</span>` : ""}</span></div>`;
+  }).join("");
+  return `<tr class="detail"><td colspan="6"><div class="psteps">${rows}</div></td></tr>`;
 }
 
 function classify(msg) {
@@ -677,6 +720,11 @@ function classify(msg) {
     return { kind: "Signal", ico: "signal", tone: "good", text: `Signal at <strong>${esc(x0[1])}</strong> cleared by ${esc(x0[2])}` };
   if ((x0 = m.match(/^signal at stop '(.+?)' is red/)))
     return { kind: "Signal", ico: "signal", tone: "warn", text: `Signal at <strong>${esc(x0[1])}</strong> is red — waiting for someone to clear it` };
+  if ((x0 = m.match(/^step (.+?): ([\s\S]*)$/))) {
+    const failed = /failed/.test(x0[2]) && !/carrying on/.test(x0[2]);
+    return { kind: "Step", ico: failed ? "x" : /passed/.test(x0[2]) ? "check" : "clock", tone: failed ? "bad" : /passed/.test(x0[2]) ? "good" : "neutral",
+      text: `<strong>${esc(x0[1])}</strong> · ${esc(x0[2])}`, bad: failed && !/until/.test(x0[2]) };
+  }
   if (/^dwelling for/.test(m)) return { kind: "Dwell", ico: "clock", tone: "active", text: esc(m.replace(/^dwelling/, "Dwelling")) };
   if (m === "succeeded") return { kind: "Done", ico: "check", tone: "good", text: "Healthy" };
   if (/brake|halted|aborted/.test(m)) return { kind: "Stopped", ico: "stop", tone: "bad", text: esc(cap(m)), bad: true };

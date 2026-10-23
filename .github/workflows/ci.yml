@@ -30,8 +30,11 @@ jobs:
       - name: Annotate test failures
         if: failure()
         run: python .github/scripts/annotate_junit.py
-      - name: Validate example config
-        run: traintraintrain -c examples/train.yaml plan
+      - name: Validate example configs
+        run: |
+          traintraintrain -c examples/train.yaml plan
+          traintraintrain -c examples/pipeline/train.yaml connectors list
+          traintraintrain -c examples/driver/train.yaml plan
 
 
   postgres:

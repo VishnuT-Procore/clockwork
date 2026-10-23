@@ -34,6 +34,21 @@ All notable changes to this project are documented here. The format follows
 - **Not in production yet:** set `train.changes.head` (e.g. `origin/main`) to see what's on
   that branch but not live, per platform: the first section of the Timetable page,
   `traintraintrain pending`, and `GET /api/pending`.
+- **Steps and checks:** `steps:` (on the train, a stop or a platform) sets each platform's
+  pipeline: built-in `deploy`, `dwell` and `wait`, plus calls through connectors. Calls
+  return metrics, and `expect` rules (`error_rate < 1`) decide whether they pass, once or
+  over time (`until`, `hold`). `on_fail: warn` records a failure and carries on. Later
+  steps can use earlier metrics. `train.rollback` can roll back through a connector. The
+  UI shows each platform's steps with their metrics and checks; `board --steps` prints
+  them.
+- **Connectors:** named adapters declared once under `connectors:`, with secrets from
+  `${ENV}`.
+  - Types: `http`, `postgres` (read-only transaction, bind parameters), `prometheus`,
+    `databricks` (SQL warehouse queries with parameters, and Jobs runs with notebook
+    results; token or service principal), `driver` (a `step` action in the driver
+    contract) and `command`.
+  - Plugin types install through the `traintraintrain.connectors` entry point group.
+  - `connectors list` and `connectors test` check them. See docs/connectors.md.
 - **Drivers:** `train.driver.command` names one program (any language) that performs the
   train's steps (`deploy`, `inspect`, `rollback`, `live_version`, `resolve`, `changes`)
   through a versioned JSON contract on stdin/stdout, with its stderr kept as the log. It's

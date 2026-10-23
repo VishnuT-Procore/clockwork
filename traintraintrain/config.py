@@ -14,6 +14,8 @@ from pathlib import Path
 
 import yaml
 
+from . import connectors as connectors_mod
+from . import steps as steps_mod
 from ._compat import LEGACY_STATE_DIR, env, pick
 from .driver import ACTIONS as DRIVER_ACTIONS
 from .driver import Driver
@@ -37,6 +39,9 @@ class Platform:
     dwell: timedelta
     deploy_timeout: timedelta
     vars: dict = field(default_factory=dict)
+    # The pipeline this platform runs; [deploy, dwell] unless `steps:` says otherwise.
+    steps: list = field(default_factory=lambda: list(steps_mod.DEFAULT))
+    custom_steps: bool = False
 
 
 @dataclass
@@ -96,6 +101,10 @@ class TrainConfig:
     resolve_timeout: timedelta = timedelta(seconds=30)
     # One program that performs the steps (see driver.py); None: shell commands only.
     driver: Driver | None = None
+    # Named adapters steps can `use:` (see connectors/); includes "driver" when train.driver is set.
+    connectors: dict = field(default_factory=dict)
+    # `train.rollback: {use: ...}`: a connector call replacing rollback_command.
+    rollback_step: object = None
 
     @property
     def platforms(self) -> list[Platform]:
@@ -134,8 +143,8 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
     if "name" not in t:
         raise ConfigError("train.name is required")
     driver = _driver(t, base_dir)
-    if "deploy_command" not in t and not (driver and "deploy" in driver.actions):
-        raise ConfigError("train.deploy_command is required (or a train.driver that handles deploy)")
+    connectors = _connectors(raw, driver, base_dir)
+    train_steps = _pipeline(t.get("steps"), "train.steps", connectors, base_dir)
 
     closures = [LineClosure.from_config(b)
                 for b in pick(t, "line_closures", "blackouts", default=[]) or []]
@@ -153,6 +162,7 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
     seen: set[str] = set()
     for i, s in enumerate(pick(raw, "stops", "waves", default=[]) or []):
         sname = s.get("name", f"stop-{i + 1}")
+        stop_steps = _pipeline(s.get("steps"), f"stop {sname!r}", connectors, base_dir) or train_steps
         stop_timetable = pick(s, "timetable", "window", default=default_timetable)
         stop_dwell = pick(s, "dwell", "bake", default=default_dwell)
         platforms = []
@@ -174,6 +184,9 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
                 deploy_timeout=parse_duration(
                     p.get("deploy_timeout", s.get("deploy_timeout", default_timeout))),
                 vars=dict(p.get("vars") or {}),
+                steps=(_pipeline(p.get("steps"), f"platform {pname!r}", connectors, base_dir)
+                       or stop_steps or list(steps_mod.DEFAULT)),
+                custom_steps=bool(p.get("steps") or stop_steps),
             ))
         if not platforms:
             raise ConfigError(f"stop {sname!r} has no platforms")
@@ -189,6 +202,23 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         ))
     if not stops:
         raise ConfigError("at least one stop is required")
+    builtin_deploy = any(s.kind == "deploy" for st in stops for p in st.platforms for s in p.steps)
+    if builtin_deploy and "deploy_command" not in t and not (driver and "deploy" in driver.actions):
+        raise ConfigError("train.deploy_command is required (or a train.driver that handles deploy, "
+                          "or a `deploy` step that uses a connector)")
+    rollback_step = None
+    if t.get("rollback") is not None:
+        if t.get("rollback_command"):
+            raise ConfigError("use train.rollback_command or train.rollback, not both")
+        item = t["rollback"]
+        if not isinstance(item, dict):
+            raise ConfigError("train.rollback must be a step mapping, e.g. {use: deployer, request: {...}}")
+        try:
+            rollback_step = steps_mod.parse_step({"name": "rollback", **item}, "train.rollback", connectors, base_dir)
+        except steps_mod.StepError as e:
+            raise ConfigError(str(e)) from None
+        if rollback_step.kind != "call":
+            raise ConfigError("train.rollback needs `use:`, `command:` or `run:`")
 
     scope = t.get("rollback_scope", "platform")
     scope = LEGACY_ROLLBACK_SCOPES.get(scope, scope)
@@ -259,7 +289,33 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         resolve_command=resolve_command,
         resolve_timeout=parse_duration(t.get("resolve_timeout", "30s")),
         driver=driver,
+        connectors=connectors,
+        rollback_step=rollback_step,
     )
+
+
+def _connectors(raw: dict, driver: Driver | None, base_dir: Path) -> dict:
+    declared = raw.get("connectors") or {}
+    if not isinstance(declared, dict):
+        raise ConfigError("connectors must be a mapping of names to connector settings")
+    out = {}
+    for name, settings in declared.items():
+        try:
+            out[name] = connectors_mod.build(str(name), settings, base_dir)
+        except (connectors_mod.ConnectorError, ValueError) as e:
+            raise ConfigError(str(e)) from None
+    if driver is not None and "driver" not in out:
+        out["driver"] = connectors_mod.build("driver", {"type": "driver", "command": driver.command}, base_dir)
+    return out
+
+
+def _pipeline(raw, where: str, connectors: dict, base_dir: Path) -> list | None:
+    if raw is None:
+        return None
+    try:
+        return steps_mod.parse_pipeline(raw, where, connectors, base_dir)
+    except steps_mod.StepError as e:
+        raise ConfigError(str(e)) from None
 
 
 # The command each driver action replaces; an explicit command wins over the driver.
