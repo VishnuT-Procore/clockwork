@@ -211,6 +211,16 @@ pre.out { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--b
 .ev .what { overflow-wrap: anywhere; }
 .ev .what code { color: var(--ink-2); background: var(--surface-2); padding: 1px 6px; border-radius: 5px; }
 .ev.bad .what { color: var(--bad); font-weight: 600; }
+.changes-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 16px;
+  border-bottom: 1px solid var(--border); background: var(--surface-2); font-size: 14px; }
+.changes-head .grow { flex: 1; min-width: 200px; color: var(--ink-2); }
+.commit { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; padding: 7px 16px;
+  border-bottom: 1px solid var(--border); font-size: 14px; }
+.commit:last-child { border-bottom: none; }
+.commit .sha { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; color: var(--ink-3); }
+.commit .msg { overflow-wrap: anywhere; }
+a.link { color: var(--accent); font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+a.link:hover { text-decoration: underline; }
 pre.log { background: #0e1116; color: #d6dde6; padding: 14px 16px; border-radius: var(--radius); overflow: auto;
   max-height: 520px; margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
 .empty { padding: 28px 16px; text-align: center; color: var(--ink-3); }
@@ -304,6 +314,7 @@ dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top
     <label class="field" for="dpPrev">Rollback target (previous version)</label>
     <input type="text" id="dpPrev" pattern="[A-Za-z0-9][A-Za-z0-9._+\-]{0,99}" placeholder="v1.4.0" autocomplete="off">
     <div class="hint">Used by the rollback command if a platform fails.</div>
+    <div class="hint" id="dpChanges"></div>
     <label class="check" style="margin-top:14px"><input type="checkbox" id="dpDry"> Dry run: print commands, skip dwell</label>
     <div class="preview" id="dpTimetable"><div class="empty small">Loading timetable…</div></div>
     <div class="buttons">
@@ -360,6 +371,8 @@ const PATHS = {
   alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.2v.1"/>',
   signal: '<rect x="8" y="3" width="8" height="15" rx="4"/><circle cx="12" cy="7.5" r="1.4" fill="currentColor"/><circle cx="12" cy="13" r="1.4"/><path d="M12 18v3"/>',
   flag: '<path d="M6 21V4M6 4h11l-2 4 2 4H6"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
 };
 function icon(name, size = 14, extra = "") {
   return `<svg class="ico ${extra}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -677,6 +690,28 @@ function renderEvents(dep) {
   return `<div class="card">${out}</div>`;
 }
 
+function changeLines(dep) {
+  return ((dep.changes && dep.changes.output) || "").split("\n").filter((l) => l.trim());
+}
+function renderChanges(dep) {
+  const ch = dep.changes || {};
+  const lines = changeLines(dep);
+  const head = `<div class="changes-head">${icon("list", 16)}<span class="grow">${
+      ch.previous_version ? `Changes from <code>${esc(ch.previous_version)}</code> to <code>${esc(dep.version)}</code>` : "Changes"}${
+      lines.length ? ` · ${lines.length} ${lines.length === 1 ? "entry" : "entries"}` : ""}</span>
+    ${ch.url ? `<a class="link" href="${esc(ch.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)}Open the full comparison</a>` : ""}</div>`;
+  let body;
+  if (ch.error && !lines.length) body = `<div class="empty">${esc(cap(ch.error))}.</div>`;
+  else if (!lines.length) body = `<div class="empty">${ch.command ? "The changes command printed nothing." : "Follow the link above to see what changed."}</div>`;
+  else body = lines.map((l) => {
+    const m = l.match(/^([0-9a-f]{7,40})\s+(.*)$/);
+    return m ? `<div class="commit"><span class="sha">${esc(m[1].slice(0, 9))}</span><span class="msg">${esc(m[2])}</span></div>`
+             : `<div class="commit"><span class="sha"></span><span class="msg">${esc(l)}</span></div>`;
+  }).join("");
+  const foot = ch.error && lines.length ? `<div class="changes-head small">${esc(cap(ch.error))}</div>` : "";
+  return `<div class="card">${head}${body}${foot}</div>`;
+}
+
 const ACTION_LABEL = { depart: "Dispatched", start: "Dispatched", resume: "Resumed", brake: "Pulled the brake",
   abort: "Pulled the brake", clear_signal: "Cleared the signal", approve: "Cleared the signal" };
 function renderActions(dep) {
@@ -753,12 +788,14 @@ function renderDeparture() {
       <h1>${esc(dep.version)}</h1>${chip(status)}
       <div class="actions">${actions}</div>
       <div class="meta">${dep.previous_version ? `<span>Rollback target <code>${esc(dep.previous_version)}</code></span>` : ""}
-        ${dep.started_at ? `<span>Departed ${esc(rel(dep.started_at))}</span>` : ""}</div>
+        ${dep.started_at ? `<span>Departed ${esc(rel(dep.started_at))}</span>` : ""}
+        ${dep.changes && dep.changes.url ? `<a class="link" href="${esc(dep.changes.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)}What's in this release</a>` : ""}</div>
     </div>
     ${callout}${tiles}
     ${dep.platforms ? `<div class="section-title">Route</div>${renderRoute(dep)}${renderStops(dep)}` : ""}
     <div class="tabs" role="tablist">
       <button type="button" class="tab" role="tab" data-tab="events" aria-selected="${t === "events"}">Activity<span class="count">${nEvents}</span></button>
+      ${dep.changes ? `<button type="button" class="tab" role="tab" data-tab="changes" aria-selected="${t === "changes"}">Changes${changeLines(dep).length ? `<span class="count">${changeLines(dep).length}</span>` : ""}</button>` : ""}
       <button type="button" class="tab" role="tab" data-tab="log" aria-selected="${t === "log"}">Log</button>
       <button type="button" class="tab" role="tab" data-tab="actions" aria-selected="${t === "actions"}">Who did what<span class="count">${nActs}</span></button>
       ${t === "events" ? `<div class="filters">
@@ -768,7 +805,7 @@ function renderDeparture() {
         <label class="check"><input type="checkbox" id="showChecks" ${S.showChecks ? "checked" : ""}> Show inspections</label></div>` : ""}
     </div>
     <div class="panel" role="tabpanel">${t === "log" ? `<pre class="log" id="logPre">${esc(dep.log || "(no output yet)")}</pre>`
-      : t === "actions" ? renderActions(dep) : renderEvents(dep)}</div>`;
+      : t === "actions" ? renderActions(dep) : t === "changes" ? renderChanges(dep) : renderEvents(dep)}</div>`;
 
   main.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { S.tab = b.dataset.tab; renderDeparture(); });
   main.querySelectorAll("[data-filter]").forEach((b) => b.onclick = () => { S.evFilter = b.dataset.filter; renderDeparture(); });
@@ -869,6 +906,7 @@ async function openDepart() {
   const lastGood = S.deps.find((x) => x.status === "succeeded");
   $("dpPrev").value = lastGood ? lastGood.version : "";
   $("dpDry").checked = false;
+  updateChangesLink();
   d.returnValue = "";
   d.showModal();
   $("dpVersion").focus();
@@ -879,6 +917,17 @@ async function openDepart() {
         <td data-label="Departs" class="num"><div>${esc(whenFull(p.start))} <span class="muted">(${esc(rel(p.start))})</span></div></td></tr>`)).join("") + `</tbody></table>`;
   } catch (e) { $("dpTimetable").innerHTML = `<div class="empty small">${esc(e.message)}</div>`; }
 }
+function updateChangesLink() {
+  const tpl = S.config && S.config.changes_url, v = $("dpVersion").value.trim(), prev = $("dpPrev").value.trim();
+  const el = $("dpChanges");
+  if (!tpl) { el.innerHTML = ""; return; }
+  if (!v || !prev) { el.textContent = "Enter both versions to see what's in this release."; return; }
+  const url = tpl.replaceAll("{version}", v).replaceAll("{previous_version}", prev).replaceAll("{train}", S.config.train);
+  el.innerHTML = `<a class="link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${icon("external", 12)}What's in ${esc(v)} since ${esc(prev)}</a>`;
+}
+$("dpVersion").addEventListener("input", updateChangesLink);
+$("dpPrev").addEventListener("input", updateChangesLink);
+
 $("departDialog").addEventListener("close", async () => {
   if ($("departDialog").returnValue !== "ok") return;
   const version = $("dpVersion").value.trim();

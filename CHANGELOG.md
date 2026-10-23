@@ -20,6 +20,14 @@ All notable changes to this project are documented here. The format follows
     what it holds), and `db import` (copy existing file-based state into Postgres).
   - New `docker-compose.postgres.yml` example, and a database URL in the Kubernetes
     Secret example.
+- **What's in this release.** `train.changes.url` and `train.changes.command` record the
+  changes between a departure's version and the previous one, using `{version}`,
+  `{previous_version}` and `{train}`:
+  - a "What's in this release" link on the departure page, in the New departure dialog
+    and in the Slack departure message
+  - a **Changes** tab listing the commits
+  - `board --changes` in the CLI
+  The command runs once per departure and never fails a deploy.
 
 ### Changed
 - CI also runs the full test suite against a real Postgres 16, and the Docker workflow

@@ -132,7 +132,9 @@ class App:
                           "platforms": platforms})
         return {"train": self.cfg.name, "rollback_scope": self.cfg.rollback_scope,
                 "has_rollback": bool(self.cfg.rollback_command),
-                "slack": self.cfg.slack is not None, "now": _iso(now), "stops": stops}
+                "slack": self.cfg.slack is not None, "now": _iso(now), "stops": stops,
+                "changes_url": self.cfg.changes.url if self.cfg.changes else None,
+                "changes_command": bool(self.cfg.changes and self.cfg.changes.command)}
 
     def timetable_view(self) -> dict:
         try:
@@ -185,6 +187,7 @@ class App:
             "platforms": st["platforms"],
             "stops": st.get("stops", {}),
             "events": st.get("events", [])[-200:],
+            "changes": st.get("changes"),
             "signal_at": at_signal,
             "signal_clear_submitted": cleared,
             "brake_applied": self.backend.get_request(self.cfg.name, version, BRAKE) is not None,

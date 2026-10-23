@@ -112,6 +112,18 @@ def cmd_board(args, cfg) -> int:
     print(f"train {st['train']}  version {st['version']}  status {_label(st['status']).upper()}")
     ended = "arrived" if st["status"] == SUCCEEDED else "stopped"
     print(f"departed {st['started_at']}  {ended} {st['finished_at'] or '-'}\n")
+    ch = st.get("changes")
+    if ch:
+        n = len([ln for ln in (ch.get("output") or "").splitlines() if ln.strip()])
+        if ch.get("url"):
+            print(f"what's in this release: {ch['url']}")
+        if ch.get("command"):
+            print(f"changes since {ch.get('previous_version')}: {n} line(s) (board --changes to list)")
+        if ch.get("error"):
+            print(f"changes: {ch['error']}")
+        if args.changes and ch.get("output"):
+            print("\n" + ch["output"].rstrip())
+        print()
     print(f"  {'STOP':<12} {'PLATFORM':<18} {'STATUS':<16} REMARKS")
     for name, p in st["platforms"].items():
         print(f"  {p['stop']:<12} {name:<18} {_label(p['status']):<16} {p['message']}")
@@ -253,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("board", aliases=["status"], help="show the departure board for a version")
     sp.add_argument("--version", required=True)
     sp.add_argument("--events", type=int, default=10, help="show the last N events")
+    sp.add_argument("--changes", action="store_true", help="list what's in this release")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_board)
 

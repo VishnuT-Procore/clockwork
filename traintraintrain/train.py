@@ -300,8 +300,43 @@ class Train:
                           for p in self.cfg.platforms},
             "events": [],
         }
+        self._collect_changes()
         self.state.event(now, f"train {self.cfg.name} departed with version {self.version}")
         self._notify("train_started")
+
+    def _collect_changes(self) -> None:
+        """Record what's in this release (compare link and/or change list). Never fails a train."""
+        ch = self.cfg.changes
+        if ch is None:
+            return
+        prev = self.previous_version
+        info: dict = {"previous_version": prev, "url": None, "command": None, "output": None,
+                      "ok": None, "error": None, "collected_at": _iso(self.clock.now())}
+        if not prev:
+            info["error"] = "no previous version given, so there is nothing to compare against"
+        else:
+            if ch.url:
+                info["url"] = ch.render(ch.url, self.cfg.name, self.version, prev)
+            if ch.command:
+                command = ch.render(ch.command, self.cfg.name, self.version, prev)
+                info["command"] = command
+                env = {"DT_TRAIN": self.cfg.name, "DT_VERSION": self.version, "DT_PREVIOUS_VERSION": prev}
+                try:
+                    res = self.runner(command, env, ch.timeout.total_seconds())
+                    info["output"] = res.output[-20000:]
+                    info["ok"] = res.returncode == 0
+                    if res.returncode != 0:
+                        info["error"] = f"changes command exited {res.returncode}"
+                except Exception as e:  # noqa: BLE001 - informational only
+                    info["ok"], info["error"] = False, f"changes command failed: {e}"
+        self.state.data["changes"] = info
+        if info["error"]:
+            log.warning("changes for %s: %s", self.version, info["error"])
+        else:
+            n = len([ln for ln in (info["output"] or "").splitlines() if ln.strip()])
+            log.info("changes for %s: %s%s", self.version,
+                     f"{n} line(s) from the changes command" if info["command"] else "",
+                     f" · {info['url']}" if info["url"] else "")
 
     def _finish(self, status: str, message: str) -> str:
         self.state.data["status"] = status

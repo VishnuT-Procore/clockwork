@@ -11,6 +11,11 @@ train:
   deploy_command: "scripts/deploy.sh {platform} {version} {cluster}"
   inspection_command: "scripts/health.sh {platform}"   # health check run while dwelling
   rollback_command: "scripts/rollback.sh {platform} {previous_version}"
+  # What's in this release: a compare link and/or a command listing the changes. Both use
+  # {version}, {previous_version} and {train}; the command runs once when a train departs.
+  changes:
+    url: "https://github.com/acme/api-service/compare/{previous_version}...{version}"
+    # command: "git -C /repos/api-service log --oneline {previous_version}..{version}"
   inspection_interval: 2m         # how often to inspect while dwelling
   default_dwell: 30m              # how long to watch a platform after deploying
   deploy_timeout: 45m

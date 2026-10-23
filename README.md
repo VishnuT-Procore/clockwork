@@ -203,6 +203,31 @@ and never stops a deploy.
 - `depart --no-notify` turns notifications off for one journey.
 - Notifications are always off in `--dry-run`.
 
+## What's in this release
+
+Tell the train how to find the changes between the version it's deploying and the
+previous one (the rollback target):
+
+```yaml
+train:
+  changes:
+    url: "https://github.com/acme/payments-api/compare/{previous_version}...{version}"
+    command: "git -C /repos/payments-api log --oneline {previous_version}..{version}"
+```
+
+- **`url`:** a compare link, shown as **"What's in this release"** on the departure page,
+  in the New departure dialog as you type the versions, and in the Slack departure
+  message. Any `http(s)` URL works: GitHub, GitLab, Bitbucket, your own changelog.
+- **`command`:** runs once when a train departs. Its output is saved with the departure
+  and listed in the UI's **Changes** tab; `git log --oneline` lines show the short hash
+  and message.
+- **CLI:** `traintraintrain board --version V --changes` prints the same list.
+
+Both use `{version}`, `{previous_version}` and `{train}`. With no previous version there is
+nothing to compare, so neither is used. The command is informational only: if it fails,
+the error is recorded and the deploy carries on. It also runs in dry runs, so keep it
+read-only.
+
 ## Storage: files or Postgres
 
 By default, each train's state, its log, the audit trail and brake/signal requests are

@@ -48,6 +48,20 @@ class Stop:
     signal: bool = False
 
 
+CHANGES_PLACEHOLDERS = {"train": "t", "version": "v2", "previous_version": "v1"}
+
+
+@dataclass
+class Changes:
+    """How to show what's in a release: a compare link and/or a command listing the changes."""
+    url: str | None = None
+    command: str | None = None
+    timeout: timedelta = timedelta(seconds=60)
+
+    def render(self, template: str, train: str, version: str, previous_version: str) -> str:
+        return template.format(train=train, version=version, previous_version=previous_version)
+
+
 @dataclass
 class TrainConfig:
     name: str
@@ -64,6 +78,7 @@ class TrainConfig:
     slack: SlackSettings | None = None
     # Set from TRAINTRAINTRAIN_DATABASE_URL; when present, state lives in Postgres.
     database_url: str | None = None
+    changes: Changes | None = None
 
     @property
     def platforms(self) -> list[Platform]:
@@ -158,6 +173,25 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
     if scope not in ROLLBACK_SCOPES:
         raise ConfigError(f"rollback_scope must be one of {ROLLBACK_SCOPES}")
 
+    changes = None
+    if t.get("changes"):
+        c = t["changes"]
+        if not isinstance(c, dict) or not (c.get("url") or c.get("command")):
+            raise ConfigError("train.changes needs a `url` and/or a `command`")
+        changes = Changes(url=c.get("url"), command=c.get("command"),
+                          timeout=parse_duration(c.get("timeout", "60s")))
+        if changes.url and not changes.url.startswith(("https://", "http://")):
+            raise ConfigError("train.changes.url must start with https:// or http://")
+        for field in ("url", "command"):
+            template = getattr(changes, field)
+            if template:
+                try:
+                    template.format(**CHANGES_PLACEHOLDERS)
+                except (KeyError, IndexError, ValueError) as e:
+                    raise ConfigError(
+                        f"train.changes.{field}: unknown placeholder {e}; use {{version}}, "
+                        "{previous_version} or {train} (and {{ }} for literal braces)") from None
+
     slack_raw = (raw.get("notifications") or {}).get("slack")
     slack = SlackSettings.from_config(slack_raw) if slack_raw is not None else None
 
@@ -179,4 +213,5 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         .resolve(),
         slack=slack,
         database_url=env("DATABASE_URL"),
+        changes=changes,
     )

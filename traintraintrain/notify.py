@@ -167,7 +167,14 @@ class SlackNotifier(Notifier):
         mention = f" {self.settings.mention_on_failure}" if self.settings.mention_on_failure else ""
         if event == "train_started":
             stops = " → ".join(s.name for s in self.train.cfg.stops)
-            return f":steam_locomotive: Train departed with `{version}`. Calling at: {stops}"
+            text = f":steam_locomotive: Train departed with `{version}`. Calling at: {stops}"
+            ch = st.get("changes") or {}
+            n = len([ln for ln in (ch.get("output") or "").splitlines() if ln.strip()])
+            if ch.get("url"):
+                text += f"\n:page_facing_up: <{ch['url']}|What's in this release>" + (f" ({n} changes)" if n else "")
+            elif n:
+                text += f"\n:page_facing_up: {n} changes since `{ch.get('previous_version')}`"
+            return text
         if event == "train_resumed":
             return f":repeat: Train resumed its journey with `{version}`"
         if event == "stop_started":
