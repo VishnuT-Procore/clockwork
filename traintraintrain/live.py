@@ -21,7 +21,9 @@ from __future__ import annotations
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
+from . import driver
 from .config import Platform, TrainConfig
 from .storage import Backend, live_record  # noqa: F401 - re-exported for the train
 
@@ -53,7 +55,7 @@ class ShaResolver:
 
     @property
     def active(self) -> bool:
-        return bool(self.cfg.resolve_command) or by_sha(self.cfg)
+        return bool(self.cfg.resolve_command) or self.cfg.handles("resolve") or by_sha(self.cfg)
 
     def __call__(self, version: str | None) -> tuple[str | None, str | None]:
         """(sha, None), or (None, why not); (None, None) when SHAs aren't tracked."""
@@ -65,7 +67,16 @@ class ShaResolver:
 
     def _resolve(self, version: str) -> tuple[str | None, str | None]:
         cfg = self.cfg
+        if not cfg.resolve_command and cfg.handles("resolve"):
+            reply = driver.call(cfg, driver.build_request("resolve", cfg, version=version),
+                                cfg.resolve_timeout.total_seconds())
+            if reply.ok:
+                return reply.data["sha"].lower(), None
+            if not reply.unsupported:
+                return None, reply.message or f"the driver couldn't resolve {version}"
         if not cfg.resolve_command:
+            if not by_sha(cfg):
+                return None, None
             if SHA_RE.match(version):
                 return version.lower(), None
             return None, f"{version!r} isn't a commit SHA; set resolve_command to look tags up"
@@ -143,25 +154,35 @@ def recorded(cfg: TrainConfig, backend: Backend) -> dict[str, dict]:
     return stored
 
 
-def probe(cfg: TrainConfig, platform: Platform, runner) -> tuple[str | None, str | None]:
-    """Ask the platform what it's running: (version, None) or (None, why not)."""
+def probe(cfg: TrainConfig, platform: Platform, runner) -> tuple[str | None, str | None, str | None]:
+    """Ask the platform what it's running: (version, None, sha or None) or (None, why not, None)."""
     if not cfg.live_version_command:
-        return None, None
+        if cfg.handles("live_version"):
+            reply = driver.call(cfg, driver.build_request(
+                "live_version", cfg, platform=platform.name, stop=platform.stop, vars=dict(platform.vars)),
+                cfg.live_version_timeout.total_seconds())
+            if reply.unsupported:
+                return None, None, None
+            if not reply.ok:
+                return None, reply.message or "the driver couldn't read the live version", None
+            sha = reply.data.get("sha")
+            return reply.data["version"], None, sha.lower() if sha else None
+        return None, None, None
     variables = platform_vars(cfg, platform, "", "")
     try:
         command = cfg.live_version_command.format_map(variables)
         res = runner(command, {f"DT_{k.upper()}": v for k, v in variables.items()},
                      cfg.live_version_timeout.total_seconds())
     except Exception as e:  # noqa: BLE001 - a probe failing must not stop anything
-        return None, f"live_version_command failed: {e}"
+        return None, f"live_version_command failed: {e}", None
     if res.returncode != 0:
-        return None, f"live_version_command exited {res.returncode}"
+        return None, f"live_version_command exited {res.returncode}", None
     lines = [ln.strip() for ln in res.output.splitlines() if ln.strip()]
     if not lines:
-        return None, "live_version_command printed nothing"
+        return None, "live_version_command printed nothing", None
     if not VERSION_RE.match(lines[-1]):
-        return None, f"live_version_command printed {lines[-1][:60]!r}, which isn't a version"
-    return lines[-1], None
+        return None, f"live_version_command printed {lines[-1][:60]!r}, which isn't a version", None
+    return lines[-1], None, None
 
 
 def resolve(cfg: TrainConfig, backend: Backend, runner, fallback: str | None = None,
@@ -169,15 +190,17 @@ def resolve(cfg: TrainConfig, backend: Backend, runner, fallback: str | None = N
     """For each platform: {version, sha, source, record, probe_error, drift}."""
     shas = shas or ShaResolver(cfg, runner)
     known = recorded(cfg, backend)
-    probes: dict[str, tuple[str | None, str | None]] = {}
-    if use_probe and cfg.live_version_command:
+    probes: dict[str, tuple[str | None, str | None, str | None]] = {}
+    if use_probe and (cfg.live_version_command or cfg.handles("live_version")):
         with ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(cfg.platforms))) as pool:
             for p, result in zip(cfg.platforms, pool.map(lambda p: probe(cfg, p, runner), cfg.platforms)):
                 probes[p.name] = result
     out = {}
     for p in cfg.platforms:
         rec = known.get(p.name)
-        probed, probe_error = probes.get(p.name, (None, None))
+        probed, probe_error, probed_sha = probes.get(p.name, (None, None, None))
+        if probed and probed_sha:
+            shas.memo.setdefault(probed, (probed_sha, None))
         if probed:
             version, source = probed, SOURCE_PROBE
         elif rec:
@@ -232,10 +255,13 @@ def collect_changes(cfg: TrainConfig, version: str, bases: dict[str, str | None]
         frm, to = (base_sha, sha) if use_sha and sha and base_sha else (base, version)
         if base is None:
             g["error"] = NOTHING_TO_COMPARE
-        elif not same and ch is not None:
-            if ch.url:
+        elif not same and (ch is not None or cfg.handles("changes")):
+            if ch is not None and ch.url:
                 g["url"] = ch.render(ch.url, cfg.name, to, frm)
-            if ch.command:
+            if (ch is None or not ch.command) and cfg.handles("changes"):
+                _driver_changes(cfg, g, version, sha, base, base_sha, members[key],
+                                ch.timeout if ch else CHANGES_TIMEOUT)
+            elif ch.command:
                 command = ch.render(ch.command, cfg.name, to, frm)
                 g["command"] = command
                 env = {"DT_TRAIN": cfg.name, "DT_VERSION": to, "DT_PREVIOUS_VERSION": frm,
@@ -255,6 +281,30 @@ def collect_changes(cfg: TrainConfig, version: str, bases: dict[str, str | None]
     main = max(comparable, key=lambda g: len(g["platforms"])) if comparable else groups[0]
     return {**{k: main[k] for k in ("previous_version", "previous_sha", "url", "command", "output", "ok", "error")},
             "sha": sha, "track_versions_by": cfg.track_versions_by, "collected_at": collected_at, "groups": groups}
+
+
+CHANGES_TIMEOUT = timedelta(seconds=60)
+
+
+def _driver_changes(cfg: TrainConfig, g: dict, version: str, sha: str | None, base: str,
+                    base_sha: str | None, platforms: list[str], timeout: timedelta) -> None:
+    """Fill a change group from the driver's `changes` reply (informational: never raises)."""
+    reply = driver.call(cfg, driver.build_request(
+        "changes", cfg, version=version, sha=sha, previous_version=base, previous_sha=base_sha,
+        platforms=platforms), timeout.total_seconds())
+    if reply.unsupported:
+        return
+    g["command"] = "driver changes"
+    g["ok"] = reply.ok
+    if not reply.ok:
+        g["error"] = reply.message or "the driver couldn't list the changes"
+        return
+    items = reply.data.get("changes") or []
+    g["items"] = items
+    # Same "id title" lines a changes command prints, so every view shows them alike.
+    g["output"] = "".join(f"{(item.get('id') or '').strip()} {item['title']}".strip() + "\n" for item in items)
+    if not g["url"] and reply.data.get("url"):
+        g["url"] = reply.data["url"]
 
 
 def change_count(group: dict) -> int:

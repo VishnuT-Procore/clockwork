@@ -15,6 +15,8 @@ from pathlib import Path
 import yaml
 
 from ._compat import LEGACY_STATE_DIR, env, pick
+from .driver import ACTIONS as DRIVER_ACTIONS
+from .driver import Driver
 from .notify import SlackSettings
 from .timetable import LineClosure, Timetable, parse_duration
 
@@ -69,7 +71,7 @@ class Changes:
 @dataclass
 class TrainConfig:
     name: str
-    deploy_command: str
+    deploy_command: str | None
     inspection_command: str | None
     rollback_command: str | None
     inspection_interval: timedelta
@@ -92,10 +94,16 @@ class TrainConfig:
     track_versions_by: str = "tag"
     resolve_command: str | None = None
     resolve_timeout: timedelta = timedelta(seconds=30)
+    # One program that performs the steps (see driver.py); None: shell commands only.
+    driver: Driver | None = None
 
     @property
     def platforms(self) -> list[Platform]:
         return [p for s in self.stops for p in s.platforms]
+
+    def handles(self, action: str) -> bool:
+        """Whether the driver performs this step (deploy, inspect, rollback, live_version, ...)."""
+        return self.driver is not None and action in self.driver.actions
 
 
 def _default_state_dir(base_dir: Path) -> str:
@@ -125,8 +133,9 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
     t = raw.get("train") or {}
     if "name" not in t:
         raise ConfigError("train.name is required")
-    if "deploy_command" not in t:
-        raise ConfigError("train.deploy_command is required")
+    driver = _driver(t, base_dir)
+    if "deploy_command" not in t and not (driver and "deploy" in driver.actions):
+        raise ConfigError("train.deploy_command is required (or a train.driver that handles deploy)")
 
     closures = [LineClosure.from_config(b)
                 for b in pick(t, "line_closures", "blackouts", default=[]) or []]
@@ -189,8 +198,9 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
     changes = None
     if t.get("changes"):
         c = t["changes"]
-        if not isinstance(c, dict) or not (c.get("url") or c.get("command")):
-            raise ConfigError("train.changes needs a `url` and/or a `command`")
+        if not isinstance(c, dict) or not (c.get("url") or c.get("command")
+                                           or (driver and "changes" in driver.actions)):
+            raise ConfigError("train.changes needs a `url` and/or a `command` (or a train.driver)")
         changes = Changes(url=c.get("url"), command=c.get("command"),
                           timeout=parse_duration(c.get("timeout", "60s")), head=c.get("head"))
         if changes.head is not None:
@@ -226,7 +236,7 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
 
     return TrainConfig(
         name=t["name"],
-        deploy_command=t["deploy_command"],
+        deploy_command=t.get("deploy_command"),
         inspection_command=pick(t, "inspection_command", "health_check_command"),
         rollback_command=t.get("rollback_command"),
         inspection_interval=parse_duration(
@@ -248,4 +258,30 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         track_versions_by=track_by,
         resolve_command=resolve_command,
         resolve_timeout=parse_duration(t.get("resolve_timeout", "30s")),
+        driver=driver,
     )
+
+
+# The command each driver action replaces; an explicit command wins over the driver.
+_ACTION_COMMANDS = {"deploy": "deploy_command", "inspect": "inspection_command",
+                    "rollback": "rollback_command", "live_version": "live_version_command",
+                    "resolve": "resolve_command"}
+
+
+def _driver(t: dict, base_dir: Path) -> Driver | None:
+    d = t.get("driver")
+    if d is None:
+        return None
+    if isinstance(d, str):
+        d = {"command": d}
+    if not isinstance(d, dict) or not isinstance(d.get("command"), str) or not d["command"].strip():
+        raise ConfigError("train.driver needs a `command`, e.g. `python3 ./deployer.py`")
+    actions = d.get("actions", list(DRIVER_ACTIONS))
+    if not isinstance(actions, list) or any(a not in DRIVER_ACTIONS for a in actions):
+        raise ConfigError(f"train.driver.actions must be a list of: {', '.join(DRIVER_ACTIONS)}")
+    has_command = {a for a, key in _ACTION_COMMANDS.items() if t.get(key) or (
+        key == "inspection_command" and t.get("health_check_command"))}
+    if (t.get("changes") or {}).get("command"):
+        has_command.add("changes")
+    return Driver(command=d["command"], actions=frozenset(a for a in actions if a not in has_command),
+                  cwd=Path(base_dir).resolve())

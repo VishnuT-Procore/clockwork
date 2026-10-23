@@ -1,0 +1,31 @@
+# A train whose steps are all performed by one driver program (see deployer.py and
+# docs/driver-contract.md). Try it:
+#
+#   traintraintrain -c examples/driver/train.yaml contract test --action deploy
+#   GIT_REPO=. traintraintrain -c examples/driver/train.yaml depart --version v0.1.0
+#   traintraintrain -c examples/driver/train.yaml ui
+train:
+  name: payments-api
+  driver:
+    command: "python3 deployer.py"     # run from this folder, without a shell
+    # actions: [deploy, inspect, rollback, live_version, resolve, changes]   # default: all
+  track_versions_by: sha                # the driver's `resolve` turns tags into commits
+  changes:
+    url: "https://github.com/VishnuT-Procore/traintraintrain/compare/{previous_version}...{version}"
+    head: main                          # show what's on main but not live yet
+  inspection_interval: 2s
+  default_dwell: 5s
+stops:
+  - name: canary
+    platforms:
+      - {name: us-west-2-canary, vars: {cluster: canary}}
+  - name: atlantic
+    parallel_platforms: 2
+    platforms:
+      - {name: us-east-1, vars: {cluster: use1}}
+      - {name: eu-west-1, vars: {cluster: euw1}}
+  - name: worldwide
+    parallel_platforms: 2
+    platforms:
+      - {name: ap-northeast-1, vars: {cluster: apne1}}
+      - {name: eu-central-1, vars: {cluster: euc1}}

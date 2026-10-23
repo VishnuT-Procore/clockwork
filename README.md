@@ -344,6 +344,37 @@ The UI's Timetable page shows a **Live now** column and the same history. Existi
 installs need nothing: until a platform has a record, its version is worked out from past
 departures. With Postgres, the new tables are created automatically, or by `db migrate`.
 
+## Plugging in your deploy system: a driver
+
+Each step can be a shell command (`deploy_command`, `inspection_command`, …), or one
+program of yours, the **driver**, can perform them all through a documented JSON contract:
+
+```yaml
+train:
+  driver:
+    command: "python3 ./deployer.py"
+```
+
+For every step, traintraintrain sends the driver one JSON request on stdin and reads one
+JSON reply from stdout. The driver's stderr is kept as the step's log:
+
+```json
+→ {"contract": 1, "action": "deploy", "platform": "us-east-1", "vars": {"cluster": "use1"},
+   "version": "v1.4.0", "sha": "2339111f…", "previous_version": "v1.3.0", ...}
+← {"ok": true, "message": "rollout complete in 94s"}
+```
+
+- **Actions:** `deploy`, `inspect`, `rollback`, `live_version` (what a platform runs),
+  `resolve` (version → commit) and `changes` (what's between two versions, as
+  `{id, title, url, author}` items).
+- **Any language, no shell:** versions are never pasted into a command line.
+- **Migrate gradually:** a step with its own `*_command` keeps using it.
+- **Check it:** `traintraintrain contract test --action deploy` sends a real request
+  (with `dry_run: true`) and checks the reply. `contract schema` prints the JSON Schema.
+
+The full contract is in [docs/driver-contract.md](docs/driver-contract.md), and a complete
+example driver is in [examples/driver](examples/driver).
+
 ## Storage: files or Postgres
 
 By default, each train's state, its log, the audit trail and brake/signal requests are

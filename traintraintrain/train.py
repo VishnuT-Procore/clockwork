@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from . import live
+from . import driver, live
 from ._compat import LEGACY_STATUS
 from .config import Platform, Stop, TrainConfig
 from .notify import Notifier, build_notifier
@@ -57,6 +57,7 @@ class Clock:
 class CommandResult:
     returncode: int
     output: str
+    message: str = ""  # a driver's own explanation, shown instead of "exit N"
 
 
 class Runner(Protocol):
@@ -339,7 +340,7 @@ class Train:
 
         Never fails a train.
         """
-        if self.cfg.changes is None:
+        if self.cfg.changes is None and not self.cfg.handles("changes"):
             return
         platforms = self.state.data["platforms"]
         info = live.collect_changes(self.cfg, self.version, {n: p.get("from_version") for n, p in platforms.items()},
@@ -408,7 +409,21 @@ class Train:
         return live.platform_vars(self.cfg, platform, self.version, self._rollback_target(platform.name),
                                   self.sha, self._rollback_sha(platform.name))
 
-    def _run(self, kind: str, template: str, platform: Platform, timeout: timedelta) -> CommandResult:
+    # The driver action for each kind of step.
+    _ACTIONS = {"deploy": "deploy", "inspection": "inspect", "rollback": "rollback"}
+
+    def _has(self, kind: str) -> bool:
+        template = {"deploy": self.cfg.deploy_command, "inspection": self.cfg.inspection_command,
+                    "rollback": self.cfg.rollback_command}[kind]
+        return bool(template) or self.cfg.handles(self._ACTIONS[kind])
+
+    def _failure(self, what: str, res: CommandResult) -> str:
+        return f"{what}: {res.message}" if res.message else f"{what} (exit {res.returncode})"
+
+    def _run(self, kind: str, template: str | None, platform: Platform, timeout: timedelta) -> CommandResult:
+        action = self._ACTIONS[kind]
+        if not template and self.cfg.handles(action):
+            return self._run_driver(kind, action, platform, timeout)
         variables = self._vars(platform)
         command = template.format_map(variables)
         env = {f"DT_{k.upper()}": v for k, v in variables.items()}
@@ -421,6 +436,25 @@ class Train:
             for line in result.output.strip().splitlines()[-20:]:
                 log.info("[%s]   | %s", platform.name, line)
         return result
+
+    def _run_driver(self, kind: str, action: str, platform: Platform, timeout: timedelta) -> CommandResult:
+        request = driver.build_request(
+            action, self.cfg, departure=self.version, triggered_by=os.environ.get("TRAINTRAINTRAIN_TRIGGERED_BY"),
+            dry_run=self.dry_run, platform=platform.name, stop=platform.stop, vars=dict(platform.vars),
+            version=self.version, sha=self.sha, previous_version=self._rollback_target(platform.name),
+            previous_sha=self._rollback_sha(platform.name))
+        what = f"driver {action} {platform.name} {self.version}"
+        if self.dry_run:
+            self.state.event(self.clock.now(), f"[dry-run] {kind}: {what}", platform.name)
+            return CommandResult(0, "")
+        self.state.event(self.clock.now(), f"{kind}: {what}", platform.name)
+        reply = driver.call(self.cfg, request, timeout.total_seconds())
+        output = "\n".join(x for x in (reply.message, reply.log) if x)
+        for line in output.splitlines()[-20:]:
+            log.info("[%s]   | %s", platform.name, line)
+        if reply.unsupported:
+            return CommandResult(1, output, f"the driver doesn't support {action}")
+        return CommandResult(0 if reply.ok else 1, output, "" if reply.ok else reply.message)
 
     # ---- per-platform lifecycle --------------------------------------------
 
@@ -463,20 +497,21 @@ class Train:
         if platform.dwell:
             self.state.event(self.clock.now(), f"dwelling for {format_duration(platform.dwell)}",
                              platform.name)
+        inspects = self._has("inspection")
         while True:
-            if cfg.inspection_command:
+            if inspects:
                 res = self._run("inspection", cfg.inspection_command, platform, INSPECTION_TIMEOUT)
                 if res.returncode != 0:
-                    raise PlatformFailed(f"inspection failed (exit {res.returncode})", res.output)
+                    raise PlatformFailed(self._failure("inspection failed", res), res.output)
             remaining = (deadline - self.clock.now()).total_seconds()
             if remaining <= 0 or self.dry_run:
                 return
-            step = remaining if not cfg.inspection_command else min(
+            step = remaining if not inspects else min(
                 remaining, cfg.inspection_interval.total_seconds())
             self._sleep(step)
 
     def _rollback(self, platform: Platform, reason: str) -> None:
-        if not self.cfg.rollback_command:
+        if not self._has("rollback"):
             self.state.event(self.clock.now(), "no rollback_command configured; skipping rollback",
                              platform.name)
             return
@@ -492,7 +527,8 @@ class Train:
                               sha=self.sha, previous_sha=target_sha)
         self.state.update_platform(
             platform.name, status=status,
-            message=f"{reason}; rollback {'ok' if res.returncode == 0 else 'FAILED'}")
+            message=f"{reason}; rollback {'ok' if res.returncode == 0 else 'FAILED'}"
+                    + (f" ({res.message})" if res.returncode and res.message else ""))
         self._notify("platform_rolled_back", platform=platform.name, ok=res.returncode == 0)
 
     def _serve_platform(self, platform: Platform) -> str:
@@ -504,7 +540,7 @@ class Train:
             self._notify("platform_deploying", platform=name)
             res = self._run("deploy", self.cfg.deploy_command, platform, platform.deploy_timeout)
             if res.returncode != 0:
-                raise PlatformFailed(f"deploy failed (exit {res.returncode})", res.output)
+                raise PlatformFailed(self._failure("deploy failed", res), res.output)
             self._check_brake()
             self._dwell(platform)
             self.state.update_platform(name, status=SUCCEEDED, finished_at=_iso(self.clock.now()),

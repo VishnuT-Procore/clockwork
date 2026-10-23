@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from . import config as config_mod
-from . import live
+from . import driver, live
 from ._compat import env
 from .notify import Notifier, SlackNotifier, build_notifier
 from .timetable import format_duration, parse_duration
@@ -285,6 +285,53 @@ def cmd_pending(args, cfg) -> int:
     return 0
 
 
+def cmd_contract_schema(args, cfg) -> int:
+    print(json.dumps(driver.JSON_SCHEMA, indent=2))
+    return 0
+
+
+def cmd_contract_test(args, cfg) -> int:
+    """Send the driver one real request and check its reply against the contract."""
+    if cfg.driver is None:
+        print("no train.driver in the config", file=sys.stderr)
+        return 1
+    action = args.action
+    if action in ("deploy", "inspect", "rollback", "live_version"):
+        names = {p.name: p for p in cfg.platforms}
+        platform = names.get(args.platform or cfg.platforms[0].name)
+        if platform is None:
+            print(f"unknown platform {args.platform!r}", file=sys.stderr)
+            return 1
+        fields = {"platform": platform.name, "stop": platform.stop, "vars": dict(platform.vars)}
+        if action != "live_version":
+            fields.update(version=args.version, sha=args.sha, previous_version=args.previous_version,
+                          previous_sha=None)
+    elif action == "resolve":
+        fields = {"version": args.version}
+    else:
+        fields = {"version": args.version, "sha": args.sha, "previous_version": args.previous_version,
+                  "previous_sha": None, "platforms": [p.name for p in cfg.platforms]}
+    # deploy and rollback are sent as a dry run unless --for-real: the driver must change nothing.
+    dry_run = action in ("deploy", "rollback") and not args.for_real
+    request = driver.build_request(action, cfg, departure=args.version, triggered_by=getpass.getuser(),
+                                   dry_run=dry_run, **fields)
+    print("request:\n" + json.dumps(request, indent=2))
+    reply = driver.call(cfg, request, args.timeout)
+    print("\nreply:\n" + (json.dumps(reply.data, indent=2) if reply.data else "(no JSON reply)"))
+    if reply.log:
+        print("\ndriver log (stderr):\n" + reply.log)
+    if reply.unsupported:
+        print(f"\nthe driver says it doesn't support {action}: traintraintrain falls back to "
+              + ("failing the step" if action == "deploy" else "not using it"))
+        return 0 if action != "deploy" else 1
+    if reply.ok:
+        print(f"\ncontract OK: {action} succeeded" + (f" ({reply.message})" if reply.message else ""))
+        return 0
+    contract_broken = "breaks the contract" in reply.message or not reply.data
+    print(f"\n{'contract BROKEN' if contract_broken else 'contract OK, but the step failed'}: {reply.message}")
+    return 1
+
+
 def cmd_brake(args, cfg) -> int:
     apply_brake(cfg, args.version, getpass.getuser())
     print(f"emergency brake applied to {cfg.name} {args.version}; "
@@ -454,6 +501,21 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("pending", help="what's on the head branch (changes.head) but not live yet")
     sp.add_argument("--changes", action="store_true", help="list the changes, not just count them")
     sp.set_defaults(func=cmd_pending)
+
+    ct = sub.add_parser("contract", help="the driver contract: print its schema, or test your driver")
+    cts = ct.add_subparsers(dest="contract_cmd", required=True, metavar="ACTION")
+    sp = cts.add_parser("schema", help="print the contract's JSON Schema")
+    sp.set_defaults(func=cmd_contract_schema)
+    sp = cts.add_parser("test", help="send the driver one request and check its reply")
+    sp.add_argument("--action", required=True, choices=driver.ACTIONS)
+    sp.add_argument("--platform", help="default: the first platform")
+    sp.add_argument("--version", default="v0.0.0-contract-test")
+    sp.add_argument("--previous-version")
+    sp.add_argument("--sha")
+    sp.add_argument("--timeout", type=float, default=60.0, help="seconds (default 60)")
+    sp.add_argument("--for-real", action="store_true",
+                    help="send deploy/rollback with dry_run false (default: true, so nothing changes)")
+    sp.set_defaults(func=cmd_contract_test)
 
     sp = sub.add_parser("brake", aliases=["abort"], help="pull the emergency brake on a train")
     sp.add_argument("--version", required=True)

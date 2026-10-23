@@ -34,6 +34,12 @@ All notable changes to this project are documented here. The format follows
 - **Not in production yet:** set `train.changes.head` (e.g. `origin/main`) to see what's on
   that branch but not live, per platform: the first section of the Timetable page,
   `traintraintrain pending`, and `GET /api/pending`.
+- **Drivers:** `train.driver.command` names one program (any language) that performs the
+  train's steps (`deploy`, `inspect`, `rollback`, `live_version`, `resolve`, `changes`)
+  through a versioned JSON contract on stdin/stdout, with its stderr kept as the log. It's
+  run without a shell. Steps with their own `*_command` keep using it.
+  `traintraintrain contract test` checks a driver and `contract schema` prints the JSON
+  Schema. See docs/driver-contract.md and examples/driver.
 - `db import` also copies live versions and their history.
 - Versions may contain `/`, for per-service monorepo tags like `payments/v1.3.0`.
 
