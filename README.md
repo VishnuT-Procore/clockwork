@@ -3,7 +3,8 @@
 [![CI](https://github.com/VishnuT-Procore/traintraintrain/actions/workflows/ci.yml/badge.svg)](https://github.com/VishnuT-Procore/traintraintrain/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/traintraintrain.svg)](https://pypi.org/project/traintraintrain/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+[![Python versions](https://img.shields.io/pypi/pyversions/traintraintrain.svg)](https://pypi.org/project/traintraintrain/)
+[![Downloads](https://img.shields.io/pypi/dm/traintraintrain.svg)](https://pypistats.org/packages/traintraintrain)
 
 Runs your releases like a railway. Each version is a **train** that calls at a series of
 **stops** in order: a canary first, then progressively larger groups of **platforms**
