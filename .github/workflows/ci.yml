@@ -80,3 +80,10 @@ jobs:
       - run: twine check --strict dist/*
       - name: Wheel contains the web UI
         run: unzip -l dist/*.whl | grep -q "traintraintrain/ui/index.html"
+      - name: The installed wheel works (not just the source tree)
+        run: |
+          python -m venv /tmp/wheel-env
+          /tmp/wheel-env/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/wheel-env/bin/traintraintrain -c "$GITHUB_WORKSPACE/examples/pipeline/train.yaml" connectors list
+          /tmp/wheel-env/bin/traintraintrain -c "$GITHUB_WORKSPACE/examples/train.yaml" plan
