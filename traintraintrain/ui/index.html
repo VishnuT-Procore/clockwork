@@ -238,7 +238,16 @@ dialog input[type=text], dialog input[type=password] { width: 100%; padding: 9px
 dialog .hint { color: var(--ink-3); font-size: 12.5px; margin-top: 4px; }
 dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .preview { margin-top: 14px; max-height: 230px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
-#dpPreview { max-height: 360px; }
+#departDialog { width: min(860px, calc(100vw - 32px)); }
+#dpPreview { max-height: 300px; }
+#dpChangeList { max-height: 340px; }
+.sub-title { font-size: 13px; font-weight: 650; margin: 16px 0 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.sub-title .muted { font-weight: 500; }
+.commit.tagged { grid-template-columns: 92px minmax(0, 1fr) auto; }
+.commit .where-tag { font-size: 12px; color: var(--ink-2); background: var(--warn-bg); border-radius: 6px; padding: 1px 7px;
+  align-self: start; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.cl-foot { padding: 8px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--border); }
+.cl-foot .note { color: var(--ink-3); }
 .preview .warnline { padding: 9px 12px; background: var(--warn-bg); border-bottom: 1px solid var(--border); font-size: 13px; }
 details.grp { border-top: 1px solid var(--border); }
 details.grp > summary { cursor: pointer; padding: 9px 12px; font-size: 13.5px; font-weight: 600; list-style-position: inside; }
@@ -319,7 +328,10 @@ details.grp .grp-foot { padding: 6px 12px 10px; font-size: 13px; }
     <p>Rolls a version out stop by stop, within each platform's timetable.</p>
     <label class="field" for="dpVersion">Version to deploy</label>
     <input type="text" id="dpVersion" required pattern="[A-Za-z0-9][A-Za-z0-9._+\/\-]{0,99}" placeholder="v1.5.0" autocomplete="off">
-    <div class="preview" id="dpPreview"><div class="empty small">Enter a version to see what it changes on each platform.</div></div>
+    <div class="sub-title">Platforms</div>
+    <div class="preview" id="dpPreview" style="margin-top:6px"><div class="empty small">Enter a version to see what it changes on each platform.</div></div>
+    <div class="sub-title" id="dpChangeTitle">What's in this departure</div>
+    <div class="preview" id="dpChangeList" style="margin-top:6px"><div class="empty small">Enter a version to list its changes.</div></div>
     <label class="field" for="dpPrev">Previous version <span class="muted" style="font-weight:500">(optional)</span></label>
     <input type="text" id="dpPrev" pattern="[A-Za-z0-9][A-Za-z0-9._+\/\-]{0,99}" placeholder="only needed if a platform shows unknown" autocomplete="off">
     <div class="hint">Each platform compares with, and rolls back to, the version it runs now. This is only used for platforms with no known version.</div>
@@ -711,27 +723,52 @@ function commitRows(lines) {
              : `<div class="commit"><span class="sha"></span><span class="msg">${esc(l)}</span></div>`;
   }).join("");
 }
-function renderChangeGroup(g, version, showWhere) {
-  const lines = linesOf(g);
-  const where = showWhere && g.platforms ? `<strong>${esc(g.platforms.join(", "))}</strong> · ` : "";
-  const what = g.up_to_date ? `already running <code>${esc(version)}</code>`
-    : g.previous_version ? `changes from <code>${esc(g.previous_version)}</code> to <code>${esc(version)}</code>` : "changes";
-  const head = `<div class="changes-head">${icon("list", 16)}<span class="grow">${where}${showWhere ? what : cap(what)}${
-      lines.length ? ` · ${lines.length} ${lines.length === 1 ? "entry" : "entries"}` : ""}</span>
-    ${g.url ? `<a class="link" href="${esc(g.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)}Open the full comparison</a>` : ""}</div>`;
+// One list of every change in a departure, each marked with the platforms that get it
+// (platforms on different versions get different subsets).
+function unifiedChanges(groups, version) {
+  const comp = groups.filter((g) => g.previous_version && !g.up_to_date);
+  const everywhere = comp.flatMap((g) => g.platforms);
+  const seen = new Map();
+  [...comp].sort((a, b) => linesOf(b).length - linesOf(a).length).forEach((g) =>
+    linesOf(g).forEach((l) => {
+      if (!seen.has(l)) seen.set(l, new Set());
+      g.platforms.forEach((p) => seen.get(l).add(p));
+    }));
+  const lines = [...seen.entries()];
+  const partial = lines.filter(([, ps]) => ps.size < everywhere.length).length;
+  const rows = lines.map(([l, ps]) => {
+    const m = l.match(/^([0-9a-f]{7,40})\s+(.*)$/);
+    const where = ps.size < everywhere.length ? [...ps].join(", ") : "";
+    return `<div class="commit${where ? " tagged" : ""}"><span class="sha">${m ? esc(m[1].slice(0, 9)) : ""}</span>
+      <span class="msg">${esc(m ? m[2] : l)}</span>${where ? `<span class="where-tag" title="${esc(where)}">only ${esc(where)}</span>` : ""}</div>`;
+  }).join("");
+  const notes = [];
+  for (const g of groups) {
+    const where = esc(g.platforms.join(", "));
+    if (g.up_to_date) notes.push(`<span class="note">${where}: already running <code>${esc(version)}</code></span>`);
+    else if (!g.previous_version) notes.push(`<span class="note">${where}: no known version, so nothing to compare (fill in “Previous version” below)</span>`);
+    else {
+      const link = g.url ? ` <a class="link" href="${esc(g.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 12)}compare <code>${esc(g.previous_version)}</code>…<code>${esc(version)}</code></a>` : "";
+      const err = g.error ? ` <span class="note">${esc(cap(g.error))}</span>` : "";
+      if (link || err) notes.push(`<span>${comp.length > 1 || groups.length > 1 ? where + ":" : ""}${link}${err}</span>`);
+    }
+  }
   let body;
-  if (g.up_to_date) body = `<div class="empty">Nothing new for ${showWhere ? "these platforms" : "this platform"}.</div>`;
-  else if (g.error && !lines.length) body = `<div class="empty">${esc(cap(g.error))}.</div>`;
-  else if (!lines.length) body = `<div class="empty">${g.command ? "The changes command printed nothing." : "Follow the link above to see what changed."}</div>`;
-  else body = commitRows(lines);
-  const foot = g.error && lines.length ? `<div class="changes-head small">${esc(cap(g.error))}</div>` : "";
-  return head + body + foot;
+  if (lines.length) body = rows;
+  else if (!comp.length) body = `<div class="empty small">Nothing to compare yet.</div>`;
+  else if (comp.some((g) => g.command)) body = `<div class="empty small">No changes listed.</div>`;
+  else body = `<div class="empty small">Open the comparison below to see what changed.</div>`;
+  const summary = lines.length
+    ? `${lines.length} change${lines.length === 1 ? "" : "s"}${partial ? ` · ${partial} only reach some platforms` : ""}` : "";
+  return { html: body + (notes.length ? `<div class="cl-foot">${notes.join("")}</div>` : ""), summary, count: lines.length };
 }
 function renderChanges(dep) {
   const ch = dep.changes || {};
-  const groups = ch.groups && ch.groups.length ? ch.groups : [ch];
-  const multi = groups.length > 1;
-  return groups.map((g) => `<div class="card" style="margin-bottom:12px">${renderChangeGroup(g, dep.version, multi)}</div>`).join("");
+  const groups = ch.groups && ch.groups.length ? ch.groups
+    : [{ ...ch, platforms: Object.keys(dep.platforms || {}), up_to_date: false }];
+  const u = unifiedChanges(groups, dep.version);
+  return `<div class="card"><div class="changes-head">${icon("list", 16)}<span class="grow">What's in <code>${esc(dep.version)}</code>${
+    u.summary ? " · " + esc(u.summary) : ""}</span></div>${u.html}</div>`;
 }
 
 const ACTION_LABEL = { depart: "Dispatched", start: "Dispatched", resume: "Resumed", brake: "Pulled the brake",
@@ -973,16 +1010,26 @@ function schedulePreview() { clearTimeout(dp.timer); dp.timer = setTimeout(loadP
 async function loadPreview() {
   const v = $("dpVersion").value.trim(), prev = $("dpPrev").value.trim(), box = $("dpPreview");
   const seq = ++dp.seq;
+  const list = $("dpChangeList");
   if (!VERSION_OK.test(v)) {
     box.innerHTML = previewTable(null, v);
+    list.innerHTML = `<div class="empty small">Enter a version to list its changes.</div>`;
+    $("dpChangeTitle").textContent = "What's in this departure";
     return;
   }
   if (!box.querySelector("table")) box.innerHTML = `<div class="empty small">Checking what each platform runs…</div>`;
+  list.innerHTML = `<div class="empty small">Collecting the changes…</div>`;
   try {
     const q = "version=" + encodeURIComponent(v) + (VERSION_OK.test(prev) ? "&previous_version=" + encodeURIComponent(prev) : "");
     const r = await api("/api/preview?" + q);
-    if (seq === dp.seq) box.innerHTML = previewTable(r, v);
-  } catch (e) { if (seq === dp.seq) box.innerHTML = `<div class="empty small">${esc(e.message)}</div>`; }
+    if (seq !== dp.seq) return;
+    box.innerHTML = previewTable(r, v);
+    const u = unifiedChanges(r.changes.groups, v);
+    $("dpChangeTitle").innerHTML = `What's in <code>${esc(v)}</code>${u.summary ? ` <span class="muted">${u.summary}</span>` : ""}`;
+    list.innerHTML = u.html;
+  } catch (e) {
+    if (seq === dp.seq) { box.innerHTML = `<div class="empty small">${esc(e.message)}</div>`; list.innerHTML = ""; }
+  }
 }
 function previewTable(r, v) {
   const groups = r ? r.changes.groups : [];
@@ -1009,15 +1056,7 @@ function previewTable(r, v) {
   }).join("");
   const warn = r && r.exists ? `<div class="warnline">A departure for <code>${esc(v)}</code> already exists. Open it from the sidebar to resume it.</div>` : "";
   const hint = r ? "" : `<div class="warnline" style="background:var(--surface-2)">Enter a version to see what each platform runs now and what it would change.</div>`;
-  const details = groups.filter((g) => g.previous_version && !g.up_to_date && (linesOf(g).length || g.url || g.error))
-    .map((g, i) => {
-      const lines = linesOf(g);
-      return `<details class="grp"${i === 0 ? " open" : ""}><summary>${esc(g.platforms.join(", "))} · <code>${esc(g.previous_version)}</code> → <code>${esc(v)}</code>${
-        g.command && g.ok ? ` · ${lines.length} change${lines.length === 1 ? "" : "s"}` : ""}</summary>
-        ${commitRows(lines.slice(0, 200))}
-        <div class="grp-foot">${g.error ? `<span class="muted">${esc(cap(g.error))}.</span> ` : ""}${g.url ? `<a class="link" href="${esc(g.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 12)}Open the full comparison</a>` : ""}</div></details>`;
-    }).join("");
-  return warn + hint + `<table class="grid"><thead><tr><th>Platform</th><th>Live now</th><th>Changes</th><th>Departs</th></tr></thead><tbody>${rows}</tbody></table>` + details;
+  return warn + hint + `<table class="grid"><thead><tr><th>Platform</th><th>Live now</th><th>Changes</th><th>Departs</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 $("dpVersion").addEventListener("input", schedulePreview);
 $("dpPrev").addEventListener("input", schedulePreview);

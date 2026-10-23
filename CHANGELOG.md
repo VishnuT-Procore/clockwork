@@ -19,7 +19,8 @@ All notable changes to this project are documented here. The format follows
   lists are grouped by live version (`changes.groups`), and `$DT_PLATFORMS` names each
   group's platforms.
 - **Preview before departing.** The New departure dialog shows each platform's live
-  version and what the typed version would change there. The CLI has
+  version, and lists every change in the departure in one list, marking the changes that
+  only reach some platforms (because they're behind). The CLI has
   `traintraintrain preview --version V`, and the API `GET /api/preview?version=V`.
 - `live_version_command` (and `live_version_timeout`) asks a platform what it runs, so
   hotfixes and rollbacks made outside traintraintrain are noticed.
