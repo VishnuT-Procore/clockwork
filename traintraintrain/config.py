@@ -49,6 +49,7 @@ class Stop:
 
 
 CHANGES_PLACEHOLDERS = {"train": "t", "version": "v2", "previous_version": "v1"}
+TRACK_BY = ("tag", "sha")
 
 
 @dataclass
@@ -82,6 +83,12 @@ class TrainConfig:
     # Optional: asks a platform which version it's running (prints it as the last line).
     live_version_command: str | None = None
     live_version_timeout: timedelta = timedelta(seconds=30)
+    # How a platform's version is tracked and compared: "tag" (the version name you deploy)
+    # or "sha" (the commit it resolves to, via resolve_command; or the version itself if
+    # you deploy commit SHAs).
+    track_versions_by: str = "tag"
+    resolve_command: str | None = None
+    resolve_timeout: timedelta = timedelta(seconds=30)
 
     @property
     def platforms(self) -> list[Platform]:
@@ -195,6 +202,18 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
                         f"train.changes.{field}: unknown placeholder {e}; use {{version}}, "
                         "{previous_version} or {train} (and {{ }} for literal braces)") from None
 
+    track_by = str(t.get("track_versions_by", "tag")).lower()
+    if track_by not in TRACK_BY:
+        raise ConfigError("train.track_versions_by must be `tag` or `sha`")
+    resolve_command = t.get("resolve_command")
+    if resolve_command:
+        try:
+            resolve_command.format(version="v1", train="t")
+        except (KeyError, IndexError, ValueError) as e:
+            raise ConfigError(
+                f"train.resolve_command: unknown placeholder {e}; use {{version}} or {{train}} "
+                "(and {{ }} for literal braces, e.g. ^{{commit}})") from None
+
     slack_raw = (raw.get("notifications") or {}).get("slack")
     slack = SlackSettings.from_config(slack_raw) if slack_raw is not None else None
 
@@ -219,4 +238,7 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         changes=changes,
         live_version_command=t.get("live_version_command"),
         live_version_timeout=parse_duration(t.get("live_version_timeout", "30s")),
+        track_versions_by=track_by,
+        resolve_command=resolve_command,
+        resolve_timeout=parse_duration(t.get("resolve_timeout", "30s")),
     )

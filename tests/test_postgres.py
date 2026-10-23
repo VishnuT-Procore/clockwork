@@ -351,3 +351,25 @@ def test_db_import_copies_live_versions(db_url, tmp_path, monkeypatch, capsys):
     assert {k: v["version"] for k, v in backend.live("svc").items()} == {
         "us-canary": "v1", "us-east": "v1", "eu-west": "v1"}
     assert len(backend.live_history("svc")) == 3
+
+
+def test_live_shas_stored_in_postgres(db_url, tmp_path):
+    from traintraintrain.train import CommandResult
+    cfg = pg_cfg(tmp_path, train__track_versions_by="sha", train__resolve_command="resolve {version}")
+    shas = {"v1": "1" * 40, "v2": "2" * 40}
+
+    class Resolving(FakeRunner):
+        def __call__(self, command, env, timeout):
+            if command.startswith("resolve "):
+                return CommandResult(0, shas[command.split()[1]])
+            return super().__call__(command, env, timeout)
+
+    for v in ("v1", "v2"):
+        clock = FakeClock(NOW)
+        assert Train(cfg, v, runner=Resolving(clock), clock=clock).run() == SUCCEEDED
+    backend = backend_for(cfg)
+    rec = backend.live(cfg.name)["eu-west"]
+    assert (rec["sha"], rec["previous_sha"]) == (shas["v2"], shas["v1"])
+    assert [h["sha"] for h in backend.live_history(cfg.name, "eu-west")] == [shas["v2"], shas["v1"]]
+    with psycopg.connect(db_url, autocommit=True) as conn:
+        assert conn.execute("SELECT count(DISTINCT sha) FROM train_platform_history").fetchone()[0] == 2

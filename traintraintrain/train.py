@@ -235,6 +235,7 @@ class Train:
         self.cfg = cfg
         self.version = version
         self.previous_version = previous_version
+        self.sha: str | None = None  # the commit `version` points to, when SHAs are tracked
         self.runner = runner
         self.clock = clock or Clock()
         self.dry_run = dry_run
@@ -279,16 +280,20 @@ class Train:
             if self.previous_version and not st.get("previous_version"):
                 st["previous_version"] = self.previous_version
             self.previous_version = st.get("previous_version")
+            self.sha = st.get("sha")
             st["status"] = EN_ROUTE
             st.update(pid=os.getpid(), host=socket.gethostname(),
                       heartbeat_at=_iso(datetime.now(timezone.utc)))
             self.state.event(now, "train resumed its journey")
             self._notify("train_resumed")
             return
-        resolved = live.resolve(self.cfg, self.backend, self.runner, fallback=self.previous_version)
+        shas = live.ShaResolver(self.cfg, self.runner)
+        self.sha, sha_error = shas(self.version)
+        resolved = live.resolve(self.cfg, self.backend, self.runner, fallback=self.previous_version, shas=shas)
         self.state.data = {
             "train": self.cfg.name,
             "version": self.version,
+            "sha": self.sha,
             "previous_version": self.previous_version,
             "status": EN_ROUTE,
             "pid": os.getpid(),
@@ -300,6 +305,7 @@ class Train:
             "platforms": {p.name: {"stop": p.stop, "status": SCHEDULED, "started_at": None,
                                    "finished_at": None, "message": "",
                                    "from_version": resolved[p.name]["version"],
+                                   "from_sha": resolved[p.name]["sha"],
                                    "from_source": resolved[p.name]["source"]}
                           for p in self.cfg.platforms},
             "events": [],
@@ -310,11 +316,16 @@ class Train:
             self.previous_version = self.state.data["previous_version"] = (
                 (self.state.data.get("changes") or {}).get("previous_version") or self._most_common_base())
         self.state.event(now, f"train {self.cfg.name} departed with version {self.version}")
+        if self.sha and self.sha != self.version.lower():
+            self.state.event(now, f"{self.version} is commit {self.sha}")
+        elif sha_error:
+            self.state.event(now, f"couldn't look up the commit of {self.version}: {sha_error}")
         for name, r in resolved.items():
             if r["drift"]:
                 self.state.event(now, f"live version is {r['version']}, not {r['record']['version']} as "
                                  "recorded (changed outside traintraintrain?)", name)
-                self._record_live(name, r["version"], live.OBSERVED, r["record"]["version"])
+                self._record_live(name, r["version"], live.OBSERVED, r["record"]["version"],
+                                  sha=r["sha"], previous_sha=r["record"].get("sha"))
             elif r["probe_error"]:
                 self.state.event(now, f"couldn't read the live version: {r['probe_error']}", name)
         self._notify("train_started")
@@ -330,8 +341,10 @@ class Train:
         """
         if self.cfg.changes is None:
             return
-        bases = {name: p.get("from_version") for name, p in self.state.data["platforms"].items()}
-        info = live.collect_changes(self.cfg, self.version, bases, self.runner, _iso(self.clock.now()))
+        platforms = self.state.data["platforms"]
+        info = live.collect_changes(self.cfg, self.version, {n: p.get("from_version") for n, p in platforms.items()},
+                                    self.runner, _iso(self.clock.now()), sha=self.sha,
+                                    base_shas={n: p.get("from_sha") for n, p in platforms.items()})
         self.state.data["changes"] = info
         for g in info["groups"]:
             where = ", ".join(g["platforms"])
@@ -345,14 +358,16 @@ class Train:
                          f" · {g['url']}" if g["url"] else "")
 
     def _record_live(self, platform: str, version: str | None, status: str,
-                     previous_version: str | None, current: bool = True) -> None:
+                     previous_version: str | None, current: bool = True,
+                     sha: str | None = None, previous_sha: str | None = None) -> None:
         """Store what a platform runs now. A storage hiccup must not fail a deploy that worked."""
         if self.dry_run:
             return
         try:
             self.backend.set_live(self.cfg.name, live.live_record(
                 platform, version, status, previous_version, departure=self.version,
-                by=os.environ.get("TRAINTRAINTRAIN_TRIGGERED_BY")), current=current)
+                by=os.environ.get("TRAINTRAINTRAIN_TRIGGERED_BY"), sha=sha, previous_sha=previous_sha),
+                current=current)
         except Exception as e:  # noqa: BLE001
             log.error("[%s] couldn't record the live version %s: %s", platform, version, e)
 
@@ -385,8 +400,13 @@ class Train:
         p = self.state.data.get("platforms", {}).get(platform) or {}
         return p.get("from_version") or self.previous_version
 
+    def _rollback_sha(self, platform: str) -> str | None:
+        p = self.state.data.get("platforms", {}).get(platform) or {}
+        return p.get("from_sha")
+
     def _vars(self, platform: Platform) -> dict[str, str]:
-        return live.platform_vars(self.cfg, platform, self.version, self._rollback_target(platform.name))
+        return live.platform_vars(self.cfg, platform, self.version, self._rollback_target(platform.name),
+                                  self.sha, self._rollback_sha(platform.name))
 
     def _run(self, kind: str, template: str, platform: Platform, timeout: timedelta) -> CommandResult:
         variables = self._vars(platform)
@@ -463,10 +483,13 @@ class Train:
         res = self._run("rollback", self.cfg.rollback_command, platform, platform.deploy_timeout)
         status = ROLLED_BACK if res.returncode == 0 else ROLLBACK_FAILED
         target = self._rollback_target(platform.name)
+        target_sha = self._rollback_sha(platform.name)
         if res.returncode == 0:
-            self._record_live(platform.name, target, live.ROLLED_BACK_TO, self.version, current=bool(target))
+            self._record_live(platform.name, target, live.ROLLED_BACK_TO, self.version, current=bool(target),
+                              sha=target_sha, previous_sha=self.sha)
         else:
-            self._record_live(platform.name, self.version, live.ROLLBACK_FAILED_ATTEMPT, target, current=False)
+            self._record_live(platform.name, self.version, live.ROLLBACK_FAILED_ATTEMPT, target, current=False,
+                              sha=self.sha, previous_sha=target_sha)
         self.state.update_platform(
             platform.name, status=status,
             message=f"{reason}; rollback {'ok' if res.returncode == 0 else 'FAILED'}")
@@ -486,7 +509,8 @@ class Train:
             self._dwell(platform)
             self.state.update_platform(name, status=SUCCEEDED, finished_at=_iso(self.clock.now()),
                                        message=f"{self.version} healthy")
-            self._record_live(name, self.version, live.DEPLOYED, self._rollback_target(name))
+            self._record_live(name, self.version, live.DEPLOYED, self._rollback_target(name),
+                              sha=self.sha, previous_sha=self._rollback_sha(name))
             self.state.event(self.clock.now(), "succeeded", name)
             self._notify("platform_succeeded", platform=name)
             return SUCCEEDED
@@ -495,7 +519,7 @@ class Train:
             if st in (DEPLOYING, DWELLING):
                 self.state.update_platform(name, status=ABORTED, message="aborted mid-deploy")
                 self._record_live(name, self.version, live.ABORTED_ATTEMPT, self._rollback_target(name),
-                                  current=False)
+                                  current=False, sha=self.sha, previous_sha=self._rollback_sha(name))
             else:
                 self.state.update_platform(name, status=SCHEDULED,
                                            message="not served (train halted)")
@@ -506,7 +530,7 @@ class Train:
                                        message=str(e), output=e.output.strip()[-2000:])
             self.state.event(self.clock.now(), f"FAILED: {e}", name)
             self._record_live(name, self.version, live.FAILED_ATTEMPT, self._rollback_target(name),
-                              current=False)
+                              current=False, sha=self.sha, previous_sha=self._rollback_sha(name))
             self._notify("platform_failed", platform=name, error=str(e), output=e.output.strip())
             if self.cfg.rollback_scope != "none":
                 self._rollback(platform, str(e))

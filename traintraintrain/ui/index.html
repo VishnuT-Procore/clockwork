@@ -255,6 +255,8 @@ details.grp .commit { padding: 5px 12px; font-size: 13px; grid-template-columns:
 details.grp .grp-foot { padding: 6px 12px 10px; font-size: 13px; }
 .ver-cell code { font-size: .9em; }
 .drift { color: var(--serious); font-weight: 600; }
+.sha-tag { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; color: var(--ink-3);
+  margin-left: 6px; }
 .preview table.grid td, .preview table.grid th { padding: 7px 12px; }
 #toasts { position: fixed; bottom: 18px; right: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
 .toast { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); padding: 10px 14px;
@@ -641,7 +643,7 @@ function renderStops(dep) {
       const running = ACTIVE_PLATFORM.has(p.status);
       const took = p.started_at ? (p.finished_at ? dur(p.started_at, p.finished_at) : running ? dur(p.started_at) + " so far" : "") : "";
       const main = `<tr>
-        <td class="name" data-label="Platform"><div>${esc(cp.name)}${p.from_version ? `<span class="two">${p.from_version === dep.version ? "already on it" : "from " + esc(p.from_version)}</span>` : ""}</div></td>
+        <td class="name" data-label="Platform"><div>${esc(cp.name)}${p.from_version ? `<span class="two">${p.from_version === dep.version ? "already on it" : "from " + esc(p.from_version)}${p.from_sha && p.from_sha !== p.from_version.toLowerCase() ? " · " + esc(p.from_sha.slice(0, 9)) : ""}</span>` : ""}</div></td>
         <td data-label="Status"><div>${chip(p.status)}</div></td>
         <td data-label="Timetable"><div>${["succeeded", "rolled_back"].includes(p.status) ? `<span class="muted">${esc(cp.timetable)}</span>` : serviceCell(cp)}</div></td>
         <td data-label="Started" class="num nowrap"><div>${p.started_at ? esc(clock(p.started_at)) : "<span class='muted'>—</span>"}</div></td>
@@ -709,6 +711,10 @@ function renderEvents(dep) {
   return `<div class="card">${out}</div>`;
 }
 
+// "v1.3.0 3f2a1b9c0": a version and the commit it was at (when SHAs are tracked).
+const shaTag = (sha, version) => sha && sha !== String(version || "").toLowerCase()
+  ? `<span class="sha-tag" title="${esc(sha)}">${esc(sha.slice(0, 9))}</span>` : "";
+const verSha = (version, sha) => version ? `<code>${esc(version)}</code>${shaTag(sha, version)}` : "<span class='muted'>—</span>";
 const linesOf = (g) => ((g && g.output) || "").split("\n").filter((l) => l.trim());
 function changeLines(dep) {
   const ch = dep.changes || {};
@@ -846,7 +852,7 @@ function renderDeparture() {
     <div class="page-head">
       <h1>${esc(dep.version)}</h1>${chip(status)}
       <div class="actions">${actions}</div>
-      <div class="meta">${dep.previous_version ? `<span>Rollback target <code>${esc(dep.previous_version)}</code></span>` : ""}
+      <div class="meta">${shaTag(dep.sha, dep.version) ? `<span>Commit <code title="${esc(dep.sha)}">${esc(dep.sha.slice(0, 9))}</code></span>` : ""}${dep.previous_version ? `<span>Rollback target <code>${esc(dep.previous_version)}</code></span>` : ""}
         ${dep.started_at ? `<span>Departed ${esc(rel(dep.started_at))}</span>` : ""}
         ${dep.changes && dep.changes.url ? `<a class="link" href="${esc(dep.changes.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)}What's in this release</a>` : ""}</div>
     </div>
@@ -943,7 +949,7 @@ const LIVE_TONE = { deployed: "good", rolled_back: "serious", failed: "bad", rol
 function liveCell(x) {
   if (!x || !x.version) return `<span class="muted">unknown</span>`;
   const sub = x.at ? `${x.status === "deployed" || !x.status ? "" : esc(LIVE_WHAT[x.status] || x.status) + " · "}${esc(rel(x.at))}` : "";
-  return `<code>${esc(x.version)}</code>${sub ? `<span class="two">${sub}</span>` : ""}`;
+  return `${verSha(x.version, x.sha)}${sub ? `<span class="two">${sub}</span>` : ""}`;
 }
 function renderLiveHistory(rows) {
   if (!rows || !rows.length) return `<div class="card"><div class="empty">Nothing recorded yet. Each deploy, rollback and failure is recorded here.</div></div>`;
@@ -952,8 +958,8 @@ function renderLiveHistory(rows) {
       <td data-label="When" class="num"><div>${esc(whenFull(r.at))}</div></td>
       <td data-label="Platform" class="name"><div>${esc(r.platform)}</div></td>
       <td data-label="What"><div><span class="t-${LIVE_TONE[r.status] || "neutral"}" style="color:var(--tone);font-weight:600">${esc(LIVE_WHAT[r.status] || r.status)}</span></div></td>
-      <td data-label="Version" class="ver-cell"><div>${r.version ? `<code>${esc(r.version)}</code>` : "<span class='muted'>—</span>"}</div></td>
-      <td data-label="Before" class="ver-cell"><div>${r.previous_version ? `<code>${esc(r.previous_version)}</code>` : "<span class='muted'>—</span>"}</div></td>
+      <td data-label="Version" class="ver-cell"><div>${verSha(r.version, r.sha)}</div></td>
+      <td data-label="Before" class="ver-cell"><div>${verSha(r.previous_version, r.previous_sha)}</div></td>
       <td data-label="Departure / who"><div>${esc([r.departure, r.by].filter(Boolean).join(" · ") || "—")}</div></td></tr>`).join("") +
     `</tbody></table></div>`;
 }
@@ -1025,7 +1031,8 @@ async function loadPreview() {
     if (seq !== dp.seq) return;
     box.innerHTML = previewTable(r, v);
     const u = unifiedChanges(r.changes.groups, v);
-    $("dpChangeTitle").innerHTML = `What's in <code>${esc(v)}</code>${u.summary ? ` <span class="muted">${u.summary}</span>` : ""}`;
+    $("dpChangeTitle").innerHTML = `What's in <code>${esc(v)}</code>${shaTag(r.sha, v)}${u.summary ? ` <span class="muted">${u.summary}</span>` : ""}${
+      r.sha_error ? ` <span class="drift">${esc(r.sha_error)}</span>` : ""}`;
     list.innerHTML = u.html;
   } catch (e) {
     if (seq === dp.seq) { box.innerHTML = `<div class="empty small">${esc(e.message)}</div>`; list.innerHTML = ""; }
@@ -1039,7 +1046,7 @@ function previewTable(r, v) {
     const g = byPlat[x.platform];
     let live = `<span class="muted">—</span>`, what = `<span class="muted">—</span>`;
     if (r) {
-      live = x.version ? `<code>${esc(x.version)}</code><span class="two">${esc(SOURCE_LABEL[x.source] || "")}${
+      live = x.version ? `${verSha(x.version, x.sha)}<span class="two">${esc(SOURCE_LABEL[x.source] || "")}${
         x.drift ? ` · <span class="drift">recorded ${esc(x.record.version)}</span>` : ""}</span>`
         : `<span class="muted">unknown</span>${x.probe_error ? `<span class="two">${esc(x.probe_error)}</span>` : ""}`;
       if (g.up_to_date) what = `<span class="muted">already running it</span>`;

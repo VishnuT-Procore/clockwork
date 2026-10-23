@@ -286,12 +286,43 @@ train:
 If the answer differs from the record, the departure logs it and records the observed
 version. If the command fails, the recorded version is used.
 
+### Track versions by tag or by commit SHA
+
+Choose per train what identifies a version:
+
+```yaml
+train:
+  track_versions_by: sha          # default: tag
+  resolve_command: "git -C /repos/payments rev-parse {version}^{{commit}}"
+```
+
+| | `tag` (default) | `sha` |
+|---|---|---|
+| Stored per platform | the version you deploy, plus its commit if `resolve_command` is set | the version and its commit |
+| Change lists compare | version names (`v1.2.0..v1.3.0`) | commits, so they stay right if a tag is moved or re-pointed |
+| Same commit under a new tag | a new version to deploy and compare | "already running it" |
+
+- **`resolve_command`** turns a version into a commit SHA (its last line of output). It
+  gets `{version}` and `{train}`; write `{{ }}` for literal braces, as in `^{{commit}}`.
+  Without git on the machine, ask your forge, e.g. the GitHub API's
+  `/repos/OWNER/REPO/commits/{version}`.
+- **Deploying commit SHAs already?** Set `track_versions_by: sha` and leave out
+  `resolve_command`: each version is its own SHA.
+- In `sha` mode, the changes `url` and `command` get the commits as `{previous_version}` and
+  `{version}`; the names are in `$DT_VERSION_NAME` and `$DT_PREVIOUS_VERSION_NAME`.
+- Deploy, inspection and rollback commands can use `{sha}` and `{previous_sha}` in either
+  mode.
+- If a version can't be resolved, the departure says so and carries on, comparing by name.
+
+SHAs are stored in the `sha` and `previous_sha` columns of both live tables, and shown
+next to versions in the UI and in `live`, `preview` and `board`.
+
 **Other commands:**
 
 ```bash
 traintraintrain live                     # what each platform runs (--probe to ask them)
 traintraintrain live --history           # every deploy, rollback and failure, newest first
-traintraintrain live-set --platform us-east-1 --version v1.3.1   # record a hand-made change
+traintraintrain live-set --platform us-east-1 --version v1.3.1   # record a hand-made change (--sha to give its commit)
 ```
 
 The UI's Timetable page shows a **Live now** column and the same history. Existing

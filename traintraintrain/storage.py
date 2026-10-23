@@ -87,12 +87,14 @@ class Backend:
     def describe(self) -> str: return self.kind
 
 
-LIVE_FIELDS = ("platform", "version", "previous_version", "status", "departure", "at", "by")
+LIVE_FIELDS = ("platform", "version", "previous_version", "sha", "previous_sha", "status", "departure", "at", "by")
 
 
 def live_record(platform: str, version: str | None, status: str, previous_version: str | None = None,
-                departure: str | None = None, by: str | None = None, at: str | None = None) -> dict:
+                departure: str | None = None, by: str | None = None, at: str | None = None,
+                sha: str | None = None, previous_sha: str | None = None) -> dict:
     return {"platform": platform, "version": version, "previous_version": previous_version,
+            "sha": sha, "previous_sha": previous_sha,
             "status": status, "departure": departure, "at": at or _iso(_now()), "by": by}
 
 
@@ -302,6 +304,8 @@ CREATE TABLE IF NOT EXISTS train_platform_versions (
     platform         text        NOT NULL,
     version          text        NOT NULL,
     previous_version text,
+    sha              text,
+    previous_sha     text,
     status           text        NOT NULL,
     departure        text,
     updated_at       timestamptz NOT NULL DEFAULT now(),
@@ -314,12 +318,18 @@ CREATE TABLE IF NOT EXISTS train_platform_history (
     platform         text        NOT NULL,
     version          text,
     previous_version text,
+    sha              text,
+    previous_sha     text,
     status           text        NOT NULL,
     departure        text,
     at               timestamptz NOT NULL DEFAULT now(),
     by_user          text
 );
 CREATE INDEX IF NOT EXISTS train_platform_history_platform ON train_platform_history (train, platform, id);
+ALTER TABLE train_platform_versions ADD COLUMN IF NOT EXISTS sha text;
+ALTER TABLE train_platform_versions ADD COLUMN IF NOT EXISTS previous_sha text;
+ALTER TABLE train_platform_history ADD COLUMN IF NOT EXISTS sha text;
+ALTER TABLE train_platform_history ADD COLUMN IF NOT EXISTS previous_sha text;
 CREATE TABLE IF NOT EXISTS train_schema (version integer PRIMARY KEY);
 INSERT INTO train_schema (version) VALUES (SCHEMA_VERSION_HERE) ON CONFLICT DO NOTHING;
 SELECT pg_advisory_unlock(29812, 0);
@@ -495,35 +505,42 @@ class PostgresBackend(Backend):
             if current and r["version"] is not None:
                 self._exec(
                     """INSERT INTO train_platform_versions
-                         (train, platform, version, previous_version, status, departure, updated_at, updated_by)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         (train, platform, version, previous_version, sha, previous_sha, status, departure,
+                          updated_at, updated_by)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                        ON CONFLICT (train, platform) DO UPDATE
                        SET version = EXCLUDED.version, previous_version = EXCLUDED.previous_version,
+                           sha = EXCLUDED.sha, previous_sha = EXCLUDED.previous_sha,
                            status = EXCLUDED.status, departure = EXCLUDED.departure,
                            updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by""",
-                    (train, r["platform"], r["version"], r["previous_version"], r["status"],
-                     r["departure"], at, r["by"]))
+                    (train, r["platform"], r["version"], r["previous_version"], r["sha"], r["previous_sha"],
+                     r["status"], r["departure"], at, r["by"]))
             if not history:
                 return
             self._exec("""INSERT INTO train_platform_history
-                            (train, platform, version, previous_version, status, departure, at, by_user)
-                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                       (train, r["platform"], r["version"], r["previous_version"], r["status"],
-                        r["departure"], at, r["by"]))
+                            (train, platform, version, previous_version, sha, previous_sha, status, departure,
+                             at, by_user)
+                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                       (train, r["platform"], r["version"], r["previous_version"], r["sha"], r["previous_sha"],
+                        r["status"], r["departure"], at, r["by"]))
 
     def live(self, train):
-        rows = self._exec("""SELECT platform, version, previous_version, status, departure, updated_at, updated_by
+        rows = self._exec("""SELECT platform, version, previous_version, sha, previous_sha, status, departure,
+                                    updated_at, updated_by
                              FROM train_platform_versions WHERE train=%s""", (train,), "all")
-        return {p: {"platform": p, "version": v, "previous_version": pv, "status": st, "departure": d,
-                    "at": _iso(at), "by": by} for p, v, pv, st, d, at, by in rows}
+        return {p: {"platform": p, "version": v, "previous_version": pv, "sha": sha, "previous_sha": psha,
+                    "status": st, "departure": d, "at": _iso(at), "by": by}
+                for p, v, pv, sha, psha, st, d, at, by in rows}
 
     def live_history(self, train, platform=None, limit=50):
-        rows = self._exec("""SELECT platform, version, previous_version, status, departure, at, by_user
+        rows = self._exec("""SELECT platform, version, previous_version, sha, previous_sha, status, departure,
+                                    at, by_user
                              FROM train_platform_history
                              WHERE train=%s AND (%s::text IS NULL OR platform=%s)
                              ORDER BY id DESC LIMIT %s""", (train, platform, platform, limit), "all")
-        return [{"platform": p, "version": v, "previous_version": pv, "status": st, "departure": d,
-                 "at": _iso(at), "by": by} for p, v, pv, st, d, at, by in rows]
+        return [{"platform": p, "version": v, "previous_version": pv, "sha": sha, "previous_sha": psha,
+                 "status": st, "departure": d, "at": _iso(at), "by": by}
+                for p, v, pv, sha, psha, st, d, at, by in rows]
 
     def close(self) -> None:
         with self._lock:

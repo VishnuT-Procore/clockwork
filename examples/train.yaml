@@ -19,6 +19,9 @@ train:
   # Optional: ask each platform which version it runs (last line of output), so hotfixes
   # made outside traintraintrain are noticed. Gets the platform's vars, e.g. {cluster}.
   # live_version_command: "kubectl --context {cluster} get deploy api -o jsonpath='{{.metadata.labels.version}}'"
+  # Track each platform by the commit it runs instead of the version name (default: tag).
+  # track_versions_by: sha
+  # resolve_command: "git -C /repos/api-service rev-parse {version}^{{commit}}"
   inspection_interval: 2m         # how often to inspect while dwelling
   default_dwell: 30m              # how long to watch a platform after deploying
   deploy_timeout: 45m

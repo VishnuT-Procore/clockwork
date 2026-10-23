@@ -26,6 +26,11 @@ All notable changes to this project are documented here. The format follows
   hotfixes and rollbacks made outside traintraintrain are noticed.
 - New commands: `live` (`--probe`, `--history`) and `live-set`. New API: `GET /api/live`.
   The Timetable page has a **Live now** column and a live version history.
+- **Track versions by tag or by commit SHA**, per train: `track_versions_by: tag` (default)
+  or `sha`. `resolve_command` looks up the commit a version points to; SHAs are stored per
+  platform (`sha`, `previous_sha`) and shown next to versions. In `sha` mode, change lists
+  compare commits, so a moved tag can't make them wrong, and a new tag on the same commit
+  shows as already running. Commands can use `{sha}` and `{previous_sha}`.
 - `db import` also copies live versions and their history.
 - Versions may contain `/`, for per-service monorepo tags like `payments/v1.3.0`.
 

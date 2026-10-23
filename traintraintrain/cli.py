@@ -110,7 +110,7 @@ def cmd_board(args, cfg) -> int:
     if args.json:
         print(json.dumps(st, indent=2))
         return 0
-    print(f"train {st['train']}  version {st['version']}  status {_label(st['status']).upper()}")
+    print(f"train {st['train']}  version {_ver(st['version'], st.get('sha'))}  status {_label(st['status']).upper()}")
     ended = "arrived" if st["status"] == SUCCEEDED else "stopped"
     print(f"departed {st['started_at']}  {ended} {st['finished_at'] or '-'}\n")
     ch = st.get("changes")
@@ -120,9 +120,9 @@ def cmd_board(args, cfg) -> int:
             where = f"{', '.join(g['platforms'])}: " if g.get("platforms") and len(groups) > 1 else ""
             _print_changes(g, where, args.changes)
         print()
-    print(f"  {'STOP':<12} {'PLATFORM':<18} {'FROM':<14} {'STATUS':<16} REMARKS")
+    print(f"  {'STOP':<12} {'PLATFORM':<18} {'FROM':<26} {'STATUS':<16} REMARKS")
     for name, p in st["platforms"].items():
-        print(f"  {p['stop']:<12} {name:<18} {p.get('from_version') or '-':<14} "
+        print(f"  {p['stop']:<12} {name:<18} {_ver(p.get('from_version'), p.get('from_sha')):<26} "
               f"{_label(p['status']):<16} {p['message']}")
     if args.events:
         print()
@@ -148,6 +148,15 @@ def _print_changes(g: dict, where: str, full: bool) -> None:
         print("\n" + g["output"].rstrip() + "\n")
 
 
+def _ver(version: str | None, sha: str | None) -> str:
+    """`v1.3.0 (3f2a1b9c0)`, or just one of them."""
+    if not version:
+        return "-"
+    if not sha or sha == version.lower():
+        return version
+    return f"{version} ({live.short(sha)})"
+
+
 def _since(at: str | None) -> str:
     return at.replace("T", " ")[:16] if at else "-"
 
@@ -159,18 +168,18 @@ def cmd_live(args, cfg) -> int:
         if args.json:
             print(json.dumps(rows, indent=2))
             return 0
-        print(f"  {'AT (UTC)':<17} {'PLATFORM':<18} {'WHAT':<16} {'VERSION':<16} {'BEFORE':<16} DEPARTURE / BY")
+        print(f"  {'AT (UTC)':<17} {'PLATFORM':<18} {'WHAT':<16} {'VERSION':<26} {'BEFORE':<26} DEPARTURE / BY")
         for r in rows:
             who = " / ".join(x for x in (r.get("departure"), r.get("by")) if x) or "-"
-            print(f"  {_since(r['at']):<17} {r['platform']:<18} {_label(r['status']):<16} "
-                  f"{r.get('version') or '-':<16} {r.get('previous_version') or '-':<16} {who}")
+            now, before = _ver(r.get("version"), r.get("sha")), _ver(r.get("previous_version"), r.get("previous_sha"))
+            print(f"  {_since(r['at']):<17} {r['platform']:<18} {_label(r['status']):<16} {now:<26} {before:<26} {who}")
         return 0
     resolved = live.resolve(cfg, backend, shell_runner, use_probe=args.probe)
     if args.json:
         print(json.dumps(list(resolved.values()), indent=2))
         return 0
-    print(f"live versions of {cfg.name} ({backend.describe()})\n")
-    print(f"  {'STOP':<12} {'PLATFORM':<18} {'VERSION':<16} {'SINCE (UTC)':<17} SOURCE")
+    print(f"live versions of {cfg.name} ({backend.describe()}; tracked by {cfg.track_versions_by})\n")
+    print(f"  {'STOP':<12} {'PLATFORM':<18} {'VERSION':<26} {'SINCE (UTC)':<17} SOURCE")
     for name, r in resolved.items():
         rec = r["record"] or {}
         source = {live.SOURCE_PROBE: "asked the platform", live.SOURCE_RECORDED: "recorded",
@@ -181,7 +190,7 @@ def cmd_live(args, cfg) -> int:
             source += f"; recorded {rec['version']}"
         if r["probe_error"]:
             source += f"; {r['probe_error']}"
-        print(f"  {r['stop']:<12} {name:<18} {r['version'] or '-':<16} {_since(rec.get('at')):<17} {source}")
+        print(f"  {r['stop']:<12} {name:<18} {_ver(r['version'], r['sha']):<26} {_since(rec.get('at')):<17} {source}")
     return 0
 
 
@@ -197,10 +206,20 @@ def cmd_live_set(args, cfg) -> int:
     backend = backend_for(cfg)
     known = live.recorded(cfg, backend)
     by = args.by or getpass.getuser()
+    sha = args.sha.lower() if args.sha else None
+    if sha and not live.SHA_RE.match(sha):
+        print(f"not a commit SHA: {args.sha!r}", file=sys.stderr)
+        return 1
+    if not sha:
+        sha, err = live.ShaResolver(cfg, shell_runner)(args.version)
+        if err:
+            print(f"warning: {err}", file=sys.stderr)
     for name in args.platform:
-        before = (known.get(name) or {}).get("version")
-        backend.set_live(cfg.name, live.live_record(name, args.version, live.SET_BY_HAND, before, by=by))
-        print(f"{name}: live version set to {args.version}" + (f" (was {before})" if before else ""))
+        rec = known.get(name) or {}
+        before = rec.get("version")
+        backend.set_live(cfg.name, live.live_record(name, args.version, live.SET_BY_HAND, before, by=by,
+                                                    sha=sha, previous_sha=rec.get("sha")))
+        print(f"{name}: live version set to {_ver(args.version, sha)}" + (f" (was {before})" if before else ""))
     return 0
 
 
@@ -212,8 +231,10 @@ def cmd_preview(args, cfg) -> int:
     if args.json:
         print(json.dumps(result, indent=2))
         return 0
-    print(f"departing {cfg.name} {args.version} now would change:\n")
-    print(f"  {'STOP':<12} {'PLATFORM':<18} {'LIVE NOW':<16} CHANGES")
+    print(f"departing {cfg.name} {_ver(args.version, result['sha'])} now would change:")
+    if result.get("sha_error"):
+        print(f"  (couldn't look up its commit: {result['sha_error']})")
+    print(f"\n  {'STOP':<12} {'PLATFORM':<18} {'LIVE NOW':<26} CHANGES")
     by_platform = {name: g for g in result["changes"]["groups"] for name in g["platforms"]}
     for r in result["platforms"]:
         g = by_platform[r["platform"]]
@@ -225,7 +246,7 @@ def cmd_preview(args, cfg) -> int:
             what = f"{live.change_count(g)} change(s)" if g.get("ok") else (g.get("error") or "")
         else:
             what = f"{r['version']} -> {args.version}"
-        print(f"  {r['stop']:<12} {r['platform']:<18} {r['version'] or '-':<16} {what}")
+        print(f"  {r['stop']:<12} {r['platform']:<18} {_ver(r['version'], r['sha']):<26} {what}")
     print()
     groups = [g for g in result["changes"]["groups"] if g["previous_version"] and not g["up_to_date"]]
     for g in groups:
@@ -388,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
                                          "(after a hotfix or rollback made outside traintraintrain)")
     sp.add_argument("--platform", action="append", required=True, help="repeat for several")
     sp.add_argument("--version", required=True)
+    sp.add_argument("--sha", help="the commit it runs (default: looked up with resolve_command)")
     sp.add_argument("--by", help="who is making the change (default: current user)")
     sp.set_defaults(func=cmd_live_set)
 

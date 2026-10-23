@@ -139,7 +139,8 @@ class App:
                 "slack": self.cfg.slack is not None, "now": _iso(now), "stops": stops,
                 "changes_url": self.cfg.changes.url if self.cfg.changes else None,
                 "changes_command": bool(self.cfg.changes and self.cfg.changes.command),
-                "live_probe": bool(self.cfg.live_version_command)}
+                "live_probe": bool(self.cfg.live_version_command),
+                "track_versions_by": self.cfg.track_versions_by}
 
     def timetable_view(self) -> dict:
         try:
@@ -160,7 +161,7 @@ class App:
         for p in self.cfg.platforms:
             rec = known.get(p.name) or {}
             platforms.append({"platform": p.name, "stop": p.stop, "version": rec.get("version"),
-                              "status": rec.get("status"), "source": rec.get("source"),
+                              "sha": rec.get("sha"), "status": rec.get("status"), "source": rec.get("source"),
                               "departure": rec.get("departure"), "at": rec.get("at"), "by": rec.get("by")})
         return {"platforms": platforms, "history": self.backend.live_history(self.cfg.name, limit=50)}
 
@@ -222,6 +223,7 @@ class App:
             "stops": st.get("stops", {}),
             "events": st.get("events", [])[-200:],
             "changes": st.get("changes"),
+            "sha": st.get("sha"),
             "signal_at": at_signal,
             "signal_clear_submitted": cleared,
             "brake_applied": self.backend.get_request(self.cfg.name, version, BRAKE) is not None,

@@ -10,6 +10,11 @@ The live version of a platform comes from, in order:
 
 Each platform then compares against its own live version, so regions that are behind get
 the longer change list, and roll back to what they were really running.
+
+Versions are tracked by tag (the version name you deploy) or by SHA (`track_versions_by:
+sha`): each version is then resolved to the commit it points to (`resolve_command`, or the
+version itself if you deploy commit SHAs), and change lists compare commits, so they stay
+right even if a tag is moved.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ from .storage import Backend, live_record  # noqa: F401 - re-exported for the tr
 log = logging.getLogger("traintraintrain")
 
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/-]{0,99}$")
+SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 # Where a platform's live version came from.
 SOURCE_PROBE, SOURCE_RECORDED, SOURCE_HISTORY, SOURCE_GIVEN = "probe", "recorded", "history", "given"
@@ -34,7 +40,56 @@ NOTHING_TO_COMPARE = "no version is known to be live here yet, so there is nothi
 PROBE_WORKERS = 8
 
 
-def platform_vars(cfg: TrainConfig, platform: Platform, version: str, previous_version: str | None) -> dict[str, str]:
+def by_sha(cfg: TrainConfig) -> bool:
+    return cfg.track_versions_by == "sha"
+
+
+class ShaResolver:
+    """Looks up the commit a version points to, once per version."""
+
+    def __init__(self, cfg: TrainConfig, runner):
+        self.cfg, self.runner = cfg, runner
+        self.memo: dict[str, tuple[str | None, str | None]] = {}
+
+    @property
+    def active(self) -> bool:
+        return bool(self.cfg.resolve_command) or by_sha(self.cfg)
+
+    def __call__(self, version: str | None) -> tuple[str | None, str | None]:
+        """(sha, None), or (None, why not); (None, None) when SHAs aren't tracked."""
+        if not version or not self.active:
+            return None, None
+        if version not in self.memo:
+            self.memo[version] = self._resolve(version)
+        return self.memo[version]
+
+    def _resolve(self, version: str) -> tuple[str | None, str | None]:
+        cfg = self.cfg
+        if not cfg.resolve_command:
+            if SHA_RE.match(version):
+                return version.lower(), None
+            return None, f"{version!r} isn't a commit SHA; set resolve_command to look tags up"
+        try:
+            command = cfg.resolve_command.format(version=version, train=cfg.name)
+            res = self.runner(command, {"DT_TRAIN": cfg.name, "DT_VERSION": version},
+                              cfg.resolve_timeout.total_seconds())
+        except Exception as e:  # noqa: BLE001 - informational; never stops a deploy
+            return None, f"resolve_command failed: {e}"
+        if res.returncode != 0:
+            return None, f"resolve_command exited {res.returncode} for {version}"
+        lines = [ln.strip() for ln in res.output.splitlines() if ln.strip()]
+        if not lines or not SHA_RE.match(lines[-1]):
+            shown = repr(lines[-1][:60]) if lines else "nothing"
+            return None, f"resolve_command printed {shown} for {version}, not a commit SHA"
+        return lines[-1].lower(), None
+
+
+def short(sha: str | None) -> str:
+    return sha[:9] if sha else ""
+
+
+def platform_vars(cfg: TrainConfig, platform: Platform, version: str, previous_version: str | None,
+                  sha: str | None = None, previous_sha: str | None = None) -> dict[str, str]:
     """The placeholders available to deploy/inspection/rollback/live-version commands."""
     return {
         "train": cfg.name,
@@ -42,6 +97,8 @@ def platform_vars(cfg: TrainConfig, platform: Platform, version: str, previous_v
         "stop": platform.stop,
         "version": version,
         "previous_version": previous_version or "",
+        "sha": sha or "",
+        "previous_sha": previous_sha or "",
         # Pre-rename names, so existing command templates keep working.
         "region": platform.name,
         "wave": platform.stop,
@@ -67,9 +124,10 @@ def from_history(cfg: TrainConfig, backend: Backend) -> dict[str, dict]:
             else:
                 continue
             if version and (name not in best or at > best[name]["at"]):
+                sha = st.get("sha") if version == st["version"] else p.get("from_sha")
                 best[name] = {"platform": name, "version": version, "status": DEPLOYED if version == st["version"]
                               else ROLLED_BACK_TO, "departure": st["version"], "at": at, "by": None,
-                              "previous_version": None}
+                              "previous_version": None, "sha": sha, "previous_sha": None}
     return best
 
 
@@ -107,8 +165,9 @@ def probe(cfg: TrainConfig, platform: Platform, runner) -> tuple[str | None, str
 
 
 def resolve(cfg: TrainConfig, backend: Backend, runner, fallback: str | None = None,
-            use_probe: bool = True) -> dict[str, dict]:
-    """For each platform: {version, source, record, probe_error, drift}."""
+            use_probe: bool = True, shas: ShaResolver | None = None) -> dict[str, dict]:
+    """For each platform: {version, sha, source, record, probe_error, drift}."""
+    shas = shas or ShaResolver(cfg, runner)
     known = recorded(cfg, backend)
     probes: dict[str, tuple[str | None, str | None]] = {}
     if use_probe and cfg.live_version_command:
@@ -127,42 +186,62 @@ def resolve(cfg: TrainConfig, backend: Backend, runner, fallback: str | None = N
             version, source = fallback, SOURCE_GIVEN
         else:
             version, source = None, None
-        out[p.name] = {"platform": p.name, "stop": p.stop, "version": version, "source": source,
-                       "record": rec, "probe_error": probe_error,
+        # The commit it runs: as recorded with that version, else looked up now.
+        sha = rec.get("sha") if rec and rec.get("version") == version else None
+        sha_error = None
+        if version and not sha:
+            sha, sha_error = shas(version)
+        out[p.name] = {"platform": p.name, "stop": p.stop, "version": version, "sha": sha,
+                       "sha_error": sha_error, "source": source, "record": rec, "probe_error": probe_error,
                        "drift": bool(probed and rec and rec["version"] != probed)}
     return out
 
 
 def collect_changes(cfg: TrainConfig, version: str, bases: dict[str, str | None], runner,
-                    collected_at: str | None) -> dict:
+                    collected_at: str | None, sha: str | None = None,
+                    base_shas: dict[str, str | None] | None = None) -> dict:
     """What `version` brings to each platform, grouped by the version each one runs now.
 
+    With `track_versions_by: sha`, platforms are grouped and compared by commit: the changes
+    url/command get the SHAs as {previous_version} and {version} (when both are known).
     The top-level fields describe the main group (the most platforms with something to
     compare), so older readers of `changes` keep working; `groups` has all of them.
     """
     ch = cfg.changes
-    order: list[str | None] = []
-    members: dict[str | None, list[str]] = {}
+    base_shas = base_shas or {}
+    use_sha = by_sha(cfg)
+    order: list = []
+    members: dict = {}
+    first: dict = {}
     for p in cfg.platforms:
-        base = bases.get(p.name)
-        if base not in members:
-            order.append(base)
-            members[base] = []
-        members[base].append(p.name)
+        base, base_sha = bases.get(p.name), base_shas.get(p.name)
+        key = ("sha", base_sha) if use_sha and base_sha else ("version", base)
+        if key not in members:
+            order.append(key)
+            members[key] = []
+            first[key] = (base, base_sha)
+        members[key].append(p.name)
     groups = []
-    for base in order:
-        g: dict = {"previous_version": base, "platforms": members[base], "url": None, "command": None,
-                   "output": None, "ok": None, "error": None, "up_to_date": base == version}
+    for key in order:
+        base, base_sha = first[key]
+        same = (use_sha and sha and base_sha == sha) or (not (use_sha and sha and base_sha) and base == version)
+        g: dict = {"previous_version": base, "previous_sha": base_sha, "sha": sha, "platforms": members[key],
+                   "url": None, "command": None, "output": None, "ok": None, "error": None,
+                   "up_to_date": bool(same)}
+        # Compare commits when tracking by SHA and both are known; else the version names.
+        frm, to = (base_sha, sha) if use_sha and sha and base_sha else (base, version)
         if base is None:
             g["error"] = NOTHING_TO_COMPARE
-        elif base != version and ch is not None:
+        elif not same and ch is not None:
             if ch.url:
-                g["url"] = ch.render(ch.url, cfg.name, version, base)
+                g["url"] = ch.render(ch.url, cfg.name, to, frm)
             if ch.command:
-                command = ch.render(ch.command, cfg.name, version, base)
+                command = ch.render(ch.command, cfg.name, to, frm)
                 g["command"] = command
-                env = {"DT_TRAIN": cfg.name, "DT_VERSION": version, "DT_PREVIOUS_VERSION": base,
-                       "DT_PLATFORMS": ",".join(members[base])}
+                env = {"DT_TRAIN": cfg.name, "DT_VERSION": to, "DT_PREVIOUS_VERSION": frm,
+                       "DT_VERSION_NAME": version, "DT_PREVIOUS_VERSION_NAME": base,
+                       "DT_SHA": sha or "", "DT_PREVIOUS_SHA": base_sha or "",
+                       "DT_PLATFORMS": ",".join(members[key])}
                 try:
                     res = runner(command, env, ch.timeout.total_seconds())
                     g["output"] = res.output[-20000:]
@@ -174,8 +253,8 @@ def collect_changes(cfg: TrainConfig, version: str, bases: dict[str, str | None]
         groups.append(g)
     comparable = [g for g in groups if g["previous_version"] and not g["up_to_date"]]
     main = max(comparable, key=lambda g: len(g["platforms"])) if comparable else groups[0]
-    return {**{k: main[k] for k in ("previous_version", "url", "command", "output", "ok", "error")},
-            "collected_at": collected_at, "groups": groups}
+    return {**{k: main[k] for k in ("previous_version", "previous_sha", "url", "command", "output", "ok", "error")},
+            "sha": sha, "track_versions_by": cfg.track_versions_by, "collected_at": collected_at, "groups": groups}
 
 
 def change_count(group: dict) -> int:
@@ -185,6 +264,10 @@ def change_count(group: dict) -> int:
 def preview(cfg: TrainConfig, backend: Backend, version: str, runner, fallback: str | None = None,
             collected_at: str | None = None) -> dict:
     """What departing `version` now would do: each platform's live version and the changes."""
-    resolved = resolve(cfg, backend, runner, fallback)
-    changes = collect_changes(cfg, version, {k: v["version"] for k, v in resolved.items()}, runner, collected_at)
-    return {"version": version, "platforms": list(resolved.values()), "changes": changes}
+    shas = ShaResolver(cfg, runner)
+    sha, sha_error = shas(version)
+    resolved = resolve(cfg, backend, runner, fallback, shas=shas)
+    changes = collect_changes(cfg, version, {k: v["version"] for k, v in resolved.items()}, runner, collected_at,
+                              sha=sha, base_shas={k: v["sha"] for k, v in resolved.items()})
+    return {"version": version, "sha": sha, "sha_error": sha_error, "track_versions_by": cfg.track_versions_by,
+            "platforms": list(resolved.values()), "changes": changes}

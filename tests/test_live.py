@@ -240,3 +240,130 @@ def test_cli_live_live_set_and_preview(tmp_path, capsys):
     assert cli.main(["-c", str(path), "live-set", "--platform", "nope", "--version", "v1"]) == 1
     assert cli.main(["-c", str(path), "board", "--version", "v1"]) == 0
     assert "FROM" in capsys.readouterr().out
+
+
+# ---- tracking by tag or by SHA ---------------------------------------------------------
+
+SHAS = {"v1": "a1" * 20, "v2": "b2" * 20, "v2-hotfix": "b2" * 20, "v3": "c3" * 20}
+
+
+class ShaRunner(FakeRunner):
+    """`resolve V` prints V's commit; `git log A..B` prints one line naming the range."""
+
+    def __call__(self, command, env, timeout):
+        if command.startswith("resolve "):
+            self.calls.append((self.clock.now(), command))
+            v = command.split()[1]
+            return CommandResult(0, SHAS[v] + "\n") if v in SHAS else CommandResult(128, "unknown revision")
+        if command.startswith("git log"):
+            self.calls.append((self.clock.now(), command))
+            self.envs.append(env)
+            return CommandResult(0, f"0000000 range {command.split()[3]}\n")
+        return super().__call__(command, env, timeout)
+
+
+def sha_cfg(tmp_path, **kw):
+    return make_cfg(tmp_path, train__changes=CHANGES, train__track_versions_by="sha",
+                    train__resolve_command="resolve {version}", **kw)
+
+
+def run_sha(cfg, version, previous=None, fail=None):
+    clock = FakeClock(NOW)
+    runner = ShaRunner(clock, fail=fail)
+    return Train(cfg, version, previous, runner=runner, clock=clock).run(), runner
+
+
+def test_sha_tracking_stores_and_compares_commits(tmp_path):
+    cfg = sha_cfg(tmp_path)
+    run_sha(cfg, "v1")
+    status, runner = run_sha(cfg, "v2")
+    assert status == SUCCEEDED
+    st = load_departure(cfg, "v2")
+    assert st["sha"] == SHAS["v2"] and {p["from_sha"] for p in st["platforms"].values()} == {SHAS["v1"]}
+    ch = st["changes"]
+    assert ch["url"].endswith(f"{SHAS['v1']}...{SHAS['v2']}") and ch["previous_sha"] == SHAS["v1"]
+    assert runner.commands("git log") == [f"git log --oneline {SHAS['v1']}..{SHAS['v2']} -- services/pay"]
+    env = runner.envs[0]
+    assert (env["DT_VERSION_NAME"], env["DT_PREVIOUS_VERSION_NAME"]) == ("v2", "v1")
+    rec = backend_for(cfg).live(cfg.name)["us-east"]
+    assert (rec["version"], rec["sha"], rec["previous_version"], rec["previous_sha"]) == (
+        "v2", SHAS["v2"], "v1", SHAS["v1"])
+    assert backend_for(cfg).live_history(cfg.name, "us-east")[0]["sha"] == SHAS["v2"]
+
+
+def test_sha_tracking_sees_through_a_new_tag_on_the_same_commit(tmp_path):
+    cfg = sha_cfg(tmp_path)
+    run_sha(cfg, "v2")
+    pv = live.preview(cfg, backend_for(cfg), "v2-hotfix", ShaRunner(FakeClock(NOW)))
+    assert all(g["up_to_date"] for g in pv["changes"]["groups"])
+    # By tag, a new name is something to deploy and compare.
+    tag_cfg = make_cfg(tmp_path, train__changes=CHANGES, train__resolve_command="resolve {version}")
+    pv = live.preview(tag_cfg, backend_for(tag_cfg), "v2-hotfix", ShaRunner(FakeClock(NOW)))
+    assert not any(g["up_to_date"] for g in pv["changes"]["groups"])
+    assert pv["changes"]["command"] == "git log --oneline v2..v2-hotfix -- services/pay"
+
+
+def test_tag_tracking_with_resolve_command_still_records_shas(tmp_path):
+    cfg = make_cfg(tmp_path, train__changes=CHANGES, train__resolve_command="resolve {version}")
+    run_sha(cfg, "v1")
+    status, runner = run_sha(cfg, "v3")
+    assert runner.commands("git log") == ["git log --oneline v1..v3 -- services/pay"]
+    assert backend_for(cfg).live(cfg.name)["us-canary"]["sha"] == SHAS["v3"]
+
+
+def test_sha_tracking_without_resolve_command_uses_sha_versions(tmp_path):
+    cfg = make_cfg(tmp_path, train__changes=CHANGES, train__track_versions_by="sha")
+    a, b = "1234567abc", "89abcde012"
+    run_sha(cfg, a)
+    status, runner = run_sha(cfg, b)
+    assert load_departure(cfg, b)["sha"] == b
+    assert runner.commands("git log") == [f"git log --oneline {a}..{b} -- services/pay"]
+    # A tag can't be tracked by SHA without a way to look it up: compared by name instead.
+    status, runner = run_sha(cfg, "v9")
+    st = load_departure(cfg, "v9")
+    assert st["sha"] is None and any("isn't a commit SHA" in e["message"] for e in st["events"])
+    assert runner.commands("git log") == [f"git log --oneline {b}..v9 -- services/pay"]
+
+
+def test_rollback_and_deploy_commands_get_shas(tmp_path):
+    cfg = sha_cfg(tmp_path, train__rollback_command="rollback {platform} {previous_version} {previous_sha}",
+                  train__deploy_command="deploy {platform} {version} {sha}")
+    run_sha(cfg, "v1")
+    status, runner = run_sha(cfg, "v2", fail={"inspect us-canary": 1})
+    assert status == FAILED
+    assert runner.commands("deploy") == [f"deploy us-canary v2 {SHAS['v2']}"]
+    assert runner.commands("rollback") == [f"rollback us-canary v1 {SHAS['v1']}"]
+    rec = backend_for(cfg).live(cfg.name)["us-canary"]
+    assert (rec["version"], rec["sha"], rec["status"]) == ("v1", SHAS["v1"], live.ROLLED_BACK_TO)
+
+
+def test_unresolvable_version_never_stops_the_train(tmp_path):
+    cfg = sha_cfg(tmp_path)
+    status, _ = run_sha(cfg, "v404")
+    st = load_departure(cfg, "v404")
+    assert status == SUCCEEDED and st["sha"] is None
+    assert any("resolve_command exited 128" in e["message"] for e in st["events"])
+
+
+def test_track_versions_by_config_validation(tmp_path):
+    import pytest
+    from traintraintrain import config
+    with pytest.raises(config.ConfigError, match="tag` or `sha"):
+        make_cfg(tmp_path, train__track_versions_by="hash")
+    with pytest.raises(config.ConfigError, match="resolve_command"):
+        make_cfg(tmp_path, train__resolve_command="git rev-parse {version}^{commit}")
+    assert make_cfg(tmp_path, train__resolve_command="git rev-parse {version}^{{commit}}").resolve_command
+
+
+def test_cli_shows_and_sets_shas(tmp_path, capsys):
+    path = write_config(tmp_path, track_versions_by="sha")
+    assert cli.main(["-c", str(path), "depart", "--version", "abcdef1234", "--no-notify"]) == 0
+    capsys.readouterr()
+    assert cli.main(["-c", str(path), "live-set", "--platform", "us-east", "--version", "v1.3.1",
+                     "--sha", "FEEDBEEF00"]) == 0
+    assert "v1.3.1 (feedbeef0)" in capsys.readouterr().out
+    assert cli.main(["-c", str(path), "live"]) == 0
+    out = capsys.readouterr().out
+    assert "tracked by sha" in out and "v1.3.1 (feedbeef0)" in out and "abcdef1234" in out
+    assert cli.main(["-c", str(path), "live-set", "--platform", "us-east", "--version", "v1",
+                     "--sha", "not-a-sha"]) == 1
