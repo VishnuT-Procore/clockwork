@@ -132,13 +132,13 @@ def cmd_board(args, cfg) -> int:
     return 0
 
 
-def _print_changes(g: dict, where: str, full: bool) -> None:
+def _print_changes(g: dict, where: str, full: bool, link_label: str = "what's in this release") -> None:
     n = live.change_count(g)
     if g.get("up_to_date"):
         print(f"{where}already running this version")
         return
     if g.get("url"):
-        print(f"{where}what's in this release: {g['url']}")
+        print(f"{where}{link_label}: {g['url']}")
     if g.get("command"):
         print(f"{where}changes since {g.get('previous_version')}: {n} line(s)"
               + ("" if full else " (--changes to list)"))
@@ -251,6 +251,37 @@ def cmd_preview(args, cfg) -> int:
     groups = [g for g in result["changes"]["groups"] if g["previous_version"] and not g["up_to_date"]]
     for g in groups:
         _print_changes(g, f"{', '.join(g['platforms'])}: " if len(groups) > 1 else "", args.changes)
+    return 0
+
+
+def cmd_pending(args, cfg) -> int:
+    result = live.pending(cfg, backend_for(cfg), shell_runner)
+    if result is None:
+        print("set train.changes.head (e.g. main) to see what isn't live yet", file=sys.stderr)
+        return 1
+    head = _ver(result["head"], result["sha"])
+    groups = result["changes"]["groups"]
+    if all(g["up_to_date"] for g in groups):
+        print(f"every platform runs {head}: nothing is waiting")
+        return 0
+    print(f"on {head}, not yet live:\n")
+    print(f"  {'STOP':<12} {'PLATFORM':<18} {'LIVE NOW':<26} WAITING")
+    by_platform = {name: g for g in groups for name in g["platforms"]}
+    for r in result["platforms"]:
+        g = by_platform[r["platform"]]
+        if g["up_to_date"]:
+            what = "nothing (up to date)"
+        elif not r["version"]:
+            what = "unknown: never deployed?"
+        elif g.get("command"):
+            what = f"{live.change_count(g)} change(s)" if g.get("ok") else (g.get("error") or "")
+        else:
+            what = f"{r['version']} -> {result['head']}"
+        print(f"  {r['stop']:<12} {r['platform']:<18} {_ver(r['version'], r['sha']):<26} {what}")
+    print()
+    waiting = [g for g in groups if g["previous_version"] and not g["up_to_date"]]
+    for g in waiting:
+        _print_changes(g, f"{', '.join(g['platforms'])}: " if len(waiting) > 1 else "", args.changes, "compare")
     return 0
 
 
@@ -419,6 +450,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--changes", action="store_true", help="list the changes, not just count them")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_preview)
+
+    sp = sub.add_parser("pending", help="what's on the head branch (changes.head) but not live yet")
+    sp.add_argument("--changes", action="store_true", help="list the changes, not just count them")
+    sp.set_defaults(func=cmd_pending)
 
     sp = sub.add_parser("brake", aliases=["abort"], help="pull the emergency brake on a train")
     sp.add_argument("--version", required=True)

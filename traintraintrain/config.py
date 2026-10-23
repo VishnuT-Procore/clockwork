@@ -58,6 +58,9 @@ class Changes:
     url: str | None = None
     command: str | None = None
     timeout: timedelta = timedelta(seconds=60)
+    # The branch (or other ref) with the newest code, e.g. `main`: what's on it but not yet
+    # live is shown as "Not in production yet".
+    head: str | None = None
 
     def render(self, template: str, train: str, version: str, previous_version: str) -> str:
         return template.format(train=train, version=version, previous_version=previous_version)
@@ -189,7 +192,11 @@ def _from_dict(raw: dict, base_dir: Path) -> TrainConfig:
         if not isinstance(c, dict) or not (c.get("url") or c.get("command")):
             raise ConfigError("train.changes needs a `url` and/or a `command`")
         changes = Changes(url=c.get("url"), command=c.get("command"),
-                          timeout=parse_duration(c.get("timeout", "60s")))
+                          timeout=parse_duration(c.get("timeout", "60s")), head=c.get("head"))
+        if changes.head is not None:
+            from .live import VERSION_RE
+            if not VERSION_RE.match(str(changes.head)):
+                raise ConfigError("train.changes.head must be a branch or ref name, e.g. main")
         if changes.url and not changes.url.startswith(("https://", "http://")):
             raise ConfigError("train.changes.url must start with https:// or http://")
         for field in ("url", "command"):

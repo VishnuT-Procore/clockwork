@@ -367,3 +367,42 @@ def test_cli_shows_and_sets_shas(tmp_path, capsys):
     assert "tracked by sha" in out and "v1.3.1 (feedbeef0)" in out and "abcdef1234" in out
     assert cli.main(["-c", str(path), "live-set", "--platform", "us-east", "--version", "v1",
                      "--sha", "not-a-sha"]) == 1
+
+
+# ---- not in production yet ---------------------------------------------------------------
+
+def test_pending_compares_the_head_branch_with_what_is_live(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    cfg = cfg_with(tmp_path, train__rollback_scope="none")
+    assert live.pending(cfg, backend_for(cfg), GitRunner(FakeClock(NOW))) is None  # no head set
+    cfg = make_cfg(tmp_path, train__rollback_scope="none", train__changes={**CHANGES, "head": "v5"})
+    depart(cfg, "v1")
+    depart(cfg, "v3", fail={"deploy us-east": 1})
+    result = live.pending(cfg, backend_for(cfg), GitRunner(FakeClock(NOW)))
+    assert result["head"] == "v5"
+    assert [(g["previous_version"], g["platforms"], live.change_count(g)) for g in result["changes"]["groups"]] == [
+        ("v3", ["us-canary", "eu-west"], 2), ("v1", ["us-east"], 4)]
+    app = App(cfg, str(tmp_path / "train.yaml"))
+    app.runner = GitRunner(FakeClock(NOW))
+    assert app.config_view()["changes_head"] == "v5"
+    assert app.pending()["head"] == "v5" and len(app.pending()["changes"]["groups"]) == 2
+    # Once everything runs the head, nothing is waiting.
+    depart(cfg, "v5")
+    result = live.pending(cfg, backend_for(cfg), GitRunner(FakeClock(NOW)))
+    assert all(g["up_to_date"] for g in result["changes"]["groups"])
+
+
+def test_pending_by_sha_and_cli(tmp_path, capsys):
+    import pytest
+    from traintraintrain import config
+    with pytest.raises(config.ConfigError, match="branch or ref"):
+        make_cfg(tmp_path, train__changes={**CHANGES, "head": "main; rm -rf /"})
+    path = write_config(tmp_path, changes={"url": CHANGES["url"], "head": "main"})
+    assert cli.main(["-c", str(path), "pending"]) == 0  # nothing deployed yet: unknown everywhere
+    assert "unknown: never deployed?" in capsys.readouterr().out
+    assert cli.main(["-c", str(path), "depart", "--version", "main", "--no-notify"]) == 0
+    capsys.readouterr()
+    assert cli.main(["-c", str(path), "pending"]) == 0
+    assert "every platform runs main: nothing is waiting" in capsys.readouterr().out
+    path = write_config(tmp_path, changes={"url": CHANGES["url"]})
+    assert cli.main(["-c", str(path), "pending"]) == 1

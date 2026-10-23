@@ -70,6 +70,7 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   padding: 7px 13px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap; }
 .btn:hover { background: var(--surface-2); }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn.small { padding: 3px 10px; font-size: 13px; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.primary:hover { filter: brightness(1.07); }
 .btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
@@ -932,6 +933,7 @@ async function renderOverview() {
         <div class="value num">${lastEnd ? esc(dur(new Date().toISOString(), lastEnd)) : "—"}</div>
         <div class="sub">${lastEnd ? `Arrives ${esc(whenFull(lastEnd))}` : ""}</div></div>
     </div>
+    ${cfg.changes_head ? `<div class="section-title">Not in production yet</div><div id="pendingBox">${renderPending()}</div>` : ""}
     <div class="section-title">Route</div>${renderRoute(null)}
     <div class="section-title">Platforms</div>${tables}
     <div class="section-title">Projected departures <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">if a train left now</span></div>
@@ -940,6 +942,34 @@ async function renderOverview() {
     <div class="section-title">Live version history</div>${renderLiveHistory(liveNow.history)}`;
   main.querySelectorAll("[data-jump]").forEach((b) => b.onclick = () =>
     document.getElementById("stop-" + b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  if (cfg.changes_head) loadPending();
+}
+
+// ---- not in production yet: what's on the head branch but not live --------------
+const PENDING_MAX_AGE = 60000;
+async function loadPending(force = false) {
+  const p = S.pending;
+  if (!force && p && (p.loading || Date.now() - p.at < PENDING_MAX_AGE)) return;
+  S.pending = { ...(p || {}), loading: true };
+  try { S.pending = { at: Date.now(), data: await api("/api/pending") }; }
+  catch (e) { S.pending = { at: Date.now(), error: e.message }; }
+  const box = document.getElementById("pendingBox");
+  if (box) box.innerHTML = renderPending();
+  box?.querySelector("[data-refresh]")?.addEventListener("click", () => loadPending(true));
+}
+function renderPending() {
+  const p = S.pending;
+  if (!p || (!p.data && !p.error)) return `<div class="card"><div class="empty">Comparing ${esc(S.config.changes_head)} with what's live…</div></div>`;
+  if (p.error) return `<div class="card"><div class="empty">${esc(p.error)}</div></div>`;
+  const r = p.data, groups = r.changes.groups;
+  const head = `<code>${esc(r.head)}</code>${shaTag(r.sha, r.head)}`;
+  const when = `<button type="button" class="btn small" data-refresh style="margin-left:auto">Refresh</button>`;
+  if (groups.every((g) => g.up_to_date))
+    return `<div class="card"><div class="changes-head">${icon("check", 16)}<span class="grow">Every platform runs ${head}. Nothing is waiting.</span>${when}</div></div>`;
+  const u = unifiedChanges(groups, r.head);
+  const behind = groups.filter((g) => !g.up_to_date).flatMap((g) => g.platforms).length;
+  return `<div class="card"><div class="changes-head">${icon("list", 16)}<span class="grow">On ${head}, not yet live${
+    u.summary ? " · " + esc(u.summary) : ""} · ${behind} of ${r.platforms.length} platforms behind</span>${when}</div>${u.html}</div>`;
 }
 
 const LIVE_WHAT = { deployed: "Deployed", rolled_back: "Rolled back to", failed: "Failed to deploy",

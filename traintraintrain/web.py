@@ -140,7 +140,8 @@ class App:
                 "changes_url": self.cfg.changes.url if self.cfg.changes else None,
                 "changes_command": bool(self.cfg.changes and self.cfg.changes.command),
                 "live_probe": bool(self.cfg.live_version_command),
-                "track_versions_by": self.cfg.track_versions_by}
+                "track_versions_by": self.cfg.track_versions_by,
+                "changes_head": self.cfg.changes.head if self.cfg.changes else None}
 
     def timetable_view(self) -> dict:
         try:
@@ -181,6 +182,15 @@ class App:
         result["exists"] = self.backend.exists(self.cfg.name, version)
         with self._lock:
             self._previews[key] = (now, result)
+        return result
+
+    def pending(self) -> dict:
+        """What's on the head branch but not live yet (cached like previews)."""
+        head = self.cfg.changes.head if self.cfg.changes else None
+        if not head:
+            raise ApiError(HTTPStatus.NOT_FOUND, "set train.changes.head (e.g. main) to see what isn't live yet")
+        result = dict(self.preview(head))
+        result["head"] = head
         return result
 
     def _summary(self, st: dict) -> dict:
@@ -399,6 +409,8 @@ def make_handler(app: App):
             elif url.path == "/api/preview":
                 self._api(lambda: app.preview((q.get("version") or [""])[0],
                                               (q.get("previous_version") or [""])[0] or None))
+            elif url.path == "/api/pending":
+                self._api(app.pending)
             elif url.path == "/api/whoami":
                 self._api(lambda: {"user": self._user(), "auth": bool(app.token)})
             else:

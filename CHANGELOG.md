@@ -31,6 +31,9 @@ All notable changes to this project are documented here. The format follows
   platform (`sha`, `previous_sha`) and shown next to versions. In `sha` mode, change lists
   compare commits, so a moved tag can't make them wrong, and a new tag on the same commit
   shows as already running. Commands can use `{sha}` and `{previous_sha}`.
+- **Not in production yet:** set `train.changes.head` (e.g. `origin/main`) to see what's on
+  that branch but not live, per platform: the first section of the Timetable page,
+  `traintraintrain pending`, and `GET /api/pending`.
 - `db import` also copies live versions and their history.
 - Versions may contain `/`, for per-service monorepo tags like `payments/v1.3.0`.
 

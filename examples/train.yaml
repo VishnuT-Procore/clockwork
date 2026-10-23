@@ -16,6 +16,7 @@ train:
   changes:
     url: "https://github.com/acme/api-service/compare/{previous_version}...{version}"
     # command: "git -C /repos/api-service log --oneline {previous_version}..{version}"
+    # head: origin/main             # show what's on this branch but not live yet
   # Optional: ask each platform which version it runs (last line of output), so hotfixes
   # made outside traintraintrain are noticed. Gets the platform's vars, e.g. {cluster}.
   # live_version_command: "kubectl --context {cluster} get deploy api -o jsonpath='{{.metadata.labels.version}}'"

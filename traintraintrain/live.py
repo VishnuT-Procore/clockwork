@@ -261,6 +261,13 @@ def change_count(group: dict) -> int:
     return len([ln for ln in (group.get("output") or "").splitlines() if ln.strip()])
 
 
+def pending(cfg: TrainConfig, backend: Backend, runner, collected_at: str | None = None) -> dict | None:
+    """What's on `changes.head` (e.g. main) that each platform doesn't run yet; None if not set."""
+    if cfg.changes is None or not cfg.changes.head:
+        return None
+    return {**preview(cfg, backend, cfg.changes.head, runner, collected_at=collected_at), "head": cfg.changes.head}
+
+
 def preview(cfg: TrainConfig, backend: Backend, version: str, runner, fallback: str | None = None,
             collected_at: str | None = None) -> dict:
     """What departing `version` now would do: each platform's live version and the changes."""

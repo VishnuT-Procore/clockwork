@@ -233,6 +233,21 @@ A platform with no known version has nothing to compare against. The command is
 informational only: if it fails, the error is recorded and the deploy carries on. It
 also runs for dry runs and previews, so keep it read-only.
 
+**Not in production yet.** Name the branch with the newest code and traintraintrain shows,
+at any time, what's on it that production doesn't run, per platform:
+
+```yaml
+train:
+  changes:
+    command: "git -C /repos/payments fetch -q && git -C /repos/payments log --oneline {previous_version}..{version}"
+    head: origin/main
+```
+
+It's the first section of the UI's Timetable page, with changes that only reach some
+platforms marked, and `traintraintrain pending --changes` prints it. It's the same
+comparison as a departure preview, with the branch in place of the version, so it works
+with `track_versions_by: sha` too (the branch is resolved to its current commit).
+
 **Monorepos:** limit the command to the folders the service is built from, so commits to
 other services are left out:
 
