@@ -72,6 +72,7 @@ Every call step can also take:
 | `hold: 10m` (+ `every: 1m`) | the rules must keep passing for 10m (a gate during bake time) |
 | `on_fail: warn` | record a failure and carry on (default `halt`: fail the platform, roll back per `rollback_scope`, halt) |
 | `timeout: 5m` | the most one call may take (default 10m) |
+| `enabled: false` | don't run it; it's shown as *skipped (disabled)*. Default `true`. Can read an env var: `enabled: ${REQUIRE_APPROVAL:-true}`. Any step but `deploy` |
 
 **What rules look like:** `<metric> <op> <value>`, where op is `< <= > >= == !=` and
 the value is a number, `true`/`false`/`null`, or a quoted string. Rules are parsed, never
@@ -117,7 +118,8 @@ train:
       expect: ["approval == 'approved'"]
       until: 4h
       every: 5m
-  after:                    # once, when the departure ends; {status} is succeeded, failed or aborted
+      enabled: ${REQUIRE_APPROVAL:-true}   # on by default; REQUIRE_APPROVAL=false skips it
+  after:                    # once, when the departure ends; {status} is succeeded, failed, aborted or timed_out
     - name: close
       use: jira
       action: comment
@@ -134,7 +136,8 @@ train:
   out*, nothing is deployed, and `after` steps see `{status}` = `timed_out`. Resume it
   once the request is approved: it waits on the same ticket again and then departs.
 - **On resume,** `before` steps that already passed aren't run again, so no second
-  ticket is raised.
+  ticket is raised. A step that was skipped because it was disabled runs if it's enabled
+  by then.
 - **`after` steps** run every time a departure ends, including after a failure or the
   emergency brake. Their own failures are recorded but don't change the outcome.
 - **Their metrics are available everywhere afterwards** as `{steps.<name>.<metric>}`:

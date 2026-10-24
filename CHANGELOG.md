@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format follows
   it ends, with `{status}`. Their metrics are available to platform steps and to commands
   as `{steps.<name>.<metric>}`; `deploy_command` and the other commands now fill those
   in too. The UI shows them as "Departure steps".
+- **`enabled:` on steps** (default `true`): switch a step off, e.g. the change approval,
+  with `enabled: false` or from the environment with `enabled: ${REQUIRE_APPROVAL:-true}`.
+  A disabled step is shown as *skipped (disabled)*. A skipped `before` step runs when a
+  departure is resumed with it enabled. `deploy` can't be disabled.
 - **Timeouts are recorded as such:** a step whose `until` window runs out is marked *timed
   out*, not *failed*. When that happens in `train.before` (e.g. a change request not
   approved in time), the departure ends as **Timed out** instead of failed. Nothing is

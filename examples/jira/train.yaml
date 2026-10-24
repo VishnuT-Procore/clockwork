@@ -37,6 +37,7 @@ train:
       expect: ["approval == 'approved'"]
       until: 4h
       every: 5m
+      enabled: ${REQUIRE_APPROVAL:-true}  # approval is required unless REQUIRE_APPROVAL=false
     - name: implementing
       use: jira
       action: transition

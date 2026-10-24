@@ -246,3 +246,46 @@ def test_departure_step_config_errors(tmp_path):
         make(tmp_path, after=AFTER + AFTER)
     with pytest.raises(config.ConfigError, match="must be a list"):
         make(tmp_path, before={"name": "x"})
+
+
+def test_approval_can_be_switched_off(tmp_path, monkeypatch):
+    approval = {**BEFORE[1], "enabled": "${REQUIRE_APPROVAL:-true}"}
+    monkeypatch.delenv("REQUIRE_APPROVAL", raising=False)
+    assert make(tmp_path, before=[BEFORE[0], approval]).before_steps[1].enabled is True  # default
+    monkeypatch.setenv("REQUIRE_APPROVAL", "false")
+    cfg = make(tmp_path, before=[BEFORE[0], approval], after=AFTER)
+    status, runner, _ = run(cfg, replies={"open": {"key": "CHG-7"}, "approval": {"approval": "pending"}})
+    assert status == SUCCEEDED
+    assert "ticket approval CHG-7" not in runner.commands("ticket")
+    rec = load_departure(cfg, "v2")["departure_steps"]["before"][1]
+    assert rec["status"] == "skipped" and rec["enabled"] is False and "disabled" in rec["message"]
+
+
+def test_a_skipped_step_runs_once_enabled_again(tmp_path, monkeypatch):
+    approval = {**BEFORE[1], "enabled": "${REQUIRE_APPROVAL:-true}"}
+    monkeypatch.setenv("REQUIRE_APPROVAL", "no")
+    cfg = make(tmp_path, before=[BEFORE[0], approval], rollback_scope="none")
+    status, _, _ = run(cfg, replies={"open": {"key": "CHG-7"}}, fail={"deploy p1": 1})
+    assert status == FAILED
+    monkeypatch.setenv("REQUIRE_APPROVAL", "yes")
+    cfg = make(tmp_path, before=[BEFORE[0], approval], rollback_scope="none")
+    clock = FakeClock(NOW)
+    runner = Runner(clock, replies={"approval": {"approval": "approved"}})
+    assert Train(cfg, "v2", runner=runner, clock=clock).run(retry_failed=True) == SUCCEEDED
+    assert runner.commands("ticket") == ["ticket approval CHG-7"]
+
+
+def test_platform_steps_can_be_disabled_but_not_deploy(tmp_path):
+    cfg = make(tmp_path, steps=["deploy", {"name": "smoke", "command": "ticket smoke", "enabled": False},
+                                {"name": "dwell", "enabled": "off"}])
+    status, runner, _ = run(cfg)
+    assert status == SUCCEEDED and runner.commands("ticket") == []
+    steps = load_departure(cfg, "v2")["platforms"]["p1"]["steps"]
+    assert [(s["name"], s["status"]) for s in steps] == [("deploy", "passed"), ("smoke", "skipped"),
+                                                          ("dwell", "skipped")]
+    with pytest.raises(config.ConfigError, match="can't be disabled"):
+        make(tmp_path, steps=[{"name": "deploy", "command": "x", "enabled": False}])
+    with pytest.raises(config.ConfigError, match="true or false"):
+        make(tmp_path, before=[{**BEFORE[0], "enabled": "maybe"}])
+    with pytest.raises(config.ConfigError, match="give it a default"):
+        make(tmp_path, before=[{**BEFORE[0], "enabled": "${SURELY_NOT_SET_ANYWHERE}"}])

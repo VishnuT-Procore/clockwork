@@ -623,6 +623,10 @@ class Train:
 
     def _run_step(self, platform: Platform, i: int, step: Step, metrics: dict) -> None:
         name = platform.name
+        if not step.enabled:
+            self._step_state(platform, i, status="skipped", message="disabled (enabled: false)")
+            self.state.event(self.clock.now(), f"step {step.name}: skipped (disabled)", name)
+            return
         self._step_state(platform, i, status="running", started_at=_iso(self.clock.now()))
         try:
             if step.kind == "deploy":
@@ -738,12 +742,18 @@ class Train:
         metrics = self._departure_metrics
         for i, step in enumerate(steps):
             rec = records[phase][i]
-            if phase == "before" and rec.get("status") in ("passed", "warned", "skipped"):
+            # Done already, unless it was only skipped (disabled then) and is enabled now.
+            done = rec.get("status") in ("passed", "warned") or (rec.get("status") == "skipped" and not step.enabled)
+            if phase == "before" and done:
                 metrics[step.name] = rec.get("metrics") or {}
                 continue
 
             def record(i=i, **fields):
                 self._departure_record(phase, i, **fields)
+            if not step.enabled:
+                record(status="skipped", message="disabled (enabled: false)")
+                self.state.event(self.clock.now(), f"{phase} step {step.name}: skipped (disabled)")
+                continue
             record(status="running", started_at=_iso(self.clock.now()))
             try:
                 if step.kind == "wait":

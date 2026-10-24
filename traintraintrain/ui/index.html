@@ -708,7 +708,8 @@ function stepsList(steps) {
       .map((c) => `<span class="why">${esc(c.why)}</span>`).join("");
     const meta = [s.connector ? esc(s.connector) : "",
       s.until ? "until " + esc(s.until) : "", s.hold ? "hold " + esc(s.hold) : "",
-      s.attempts > 1 ? `${s.attempts} tries` : "", s.on_fail === "warn" ? "warn only" : ""].filter(Boolean).join(" · ");
+      s.attempts > 1 ? `${s.attempts} tries` : "", s.on_fail === "warn" ? "warn only" : "",
+      s.enabled === false ? "disabled" : ""].filter(Boolean).join(" · ");
     const pendingRules = !s.metrics && (s.expect || []).length
       ? (s.expect || []).map((r) => `<span class="mchip">${esc(r)}</span>`).join("") : "";
     const why = (s.status === "failed" || s.status === "warned") && s.message && !missing

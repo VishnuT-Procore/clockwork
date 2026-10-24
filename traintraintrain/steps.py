@@ -27,7 +27,8 @@ from . import connectors as conn
 from .timetable import format_duration, parse_duration
 
 BUILTINS = ("deploy", "dwell")
-COMMON_KEYS = {"name", "use", "expect", "until", "hold", "every", "timeout", "on_fail"}
+COMMON_KEYS = {"name", "use", "expect", "until", "hold", "every", "timeout", "on_fail", "enabled"}
+_TRUE, _FALSE = {"true", "yes", "on", "1"}, {"false", "no", "off", "0"}
 ON_FAIL = ("halt", "warn")
 
 
@@ -44,6 +45,7 @@ class Step:
     every: timedelta = timedelta(seconds=30)
     timeout: timedelta = timedelta(minutes=10)
     on_fail: str = "halt"
+    enabled: bool = True            # false: recorded as skipped, not run
 
     def summary(self) -> dict:
         """What the UI and state show about a step's definition."""
@@ -60,6 +62,8 @@ class Step:
             out["hold"] = format_duration(self.hold)
         if self.on_fail != "halt":
             out["on_fail"] = self.on_fail
+        if not self.enabled:
+            out["enabled"] = False
         return out
 
 
@@ -84,6 +88,23 @@ def parse_pipeline(raw, where: str, connectors: dict, base_dir: Path) -> list[St
     return steps
 
 
+def _enabled(item: dict, where: str) -> bool:
+    """`enabled:` (default true): a boolean, or a string like "${REQUIRE_APPROVAL:-true}"."""
+    value = item.get("enabled", True)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        try:
+            text = conn.interpolate_env(value).strip().lower()
+        except conn.ConnectorError as e:
+            raise StepError(f"{where}: enabled: {e} (give it a default, e.g. ${{REQUIRE_APPROVAL:-true}})") from None
+        if text in _TRUE:
+            return True
+        if text in _FALSE:
+            return False
+    raise StepError(f"{where}: enabled must be true or false, not {value!r}")
+
+
 def parse_step(item, where: str, connectors: dict, base_dir: Path) -> Step:
     if isinstance(item, str):
         if item in BUILTINS:
@@ -93,16 +114,20 @@ def parse_step(item, where: str, connectors: dict, base_dir: Path) -> Step:
     if not isinstance(item, dict):
         raise StepError(f"{where}: a step is `deploy`, `dwell`, `wait: <duration>`, or a mapping")
     if "wait" in item:
-        extra = set(item) - {"wait", "name"}
+        extra = set(item) - {"wait", "name", "enabled"}
         if extra:
-            raise StepError(f"{where}: a wait step only takes `wait` (and `name`), not {', '.join(sorted(extra))}")
+            raise StepError(f"{where}: a wait step only takes `wait` (and `name`, `enabled`), "
+                            f"not {', '.join(sorted(extra))}")
         duration = _duration(item["wait"], where, "wait")
-        return Step("wait", str(item.get("name") or f"wait {format_duration(duration)}"), duration=duration)
+        return Step("wait", str(item.get("name") or f"wait {format_duration(duration)}"), duration=duration,
+                    enabled=_enabled(item, where))
     name = item.get("name")
     if not isinstance(name, str) or not name.strip():
         raise StepError(f"{where}: every step needs a `name`")
     where = f"{where} ({name})"
     if name in BUILTINS and not ({"use", "command", "run"} & set(item)):
+        if name == "dwell" and set(item) == {"name", "enabled"}:
+            return Step("dwell", "dwell", enabled=_enabled(item, where))
         if set(item) - {"name"}:
             raise StepError(f"{where}: the built-in {name} step takes no settings; to replace it, "
                             "add `use:` (or `command:` / `run:`)")
@@ -125,7 +150,10 @@ def parse_step(item, where: str, connectors: dict, base_dir: Path) -> Step:
     on_fail = item.get("on_fail", "halt")
     if on_fail not in ON_FAIL:
         raise StepError(f"{where}: on_fail must be halt or warn")
-    return Step("call", name, connector=connector.name, settings=settings, expect=rules,
+    enabled = _enabled(item, where)
+    if name == "deploy" and not enabled:
+        raise StepError(f"{where}: the deploy step can't be disabled")
+    return Step("call", name, connector=connector.name, settings=settings, expect=rules, enabled=enabled,
                 until=_duration(item["until"], where, "until") if item.get("until") else None,
                 hold=_duration(item["hold"], where, "hold") if item.get("hold") else None,
                 every=_duration(item.get("every", "30s"), where, "every"),
