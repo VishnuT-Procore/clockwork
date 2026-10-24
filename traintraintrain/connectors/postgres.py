@@ -69,6 +69,10 @@ class PostgresConnector(Connector):
         if not isinstance(step.get("query"), str) or not step["query"].strip():
             raise ConnectorError("a postgres step needs a `query`")
 
+    def ping(self, ctx, timeout):
+        return self.call({"query": "select current_user as user, current_database() as database, "
+                                   "split_part(version(), ' ', 2) as server_version"}, ctx, timeout)
+
     def call(self, step, ctx, timeout):
         try:
             import psycopg

@@ -85,6 +85,14 @@ class HttpConnector(Connector):
     def step_is_read_only(self, step):
         return str(step["request"].get("method", "GET")).upper() in ("GET", "HEAD")
 
+    def ping(self, ctx, timeout):
+        if not self.settings.get("base_url"):
+            return None
+        result = self.call({"request": {"path": "/"}, "ok_status": list(range(200, 500))}, ctx, timeout)
+        if result.ok:
+            result.message = f"{redact(str(self.setting('base_url')))} is reachable (HTTP {result.metrics['status']})"
+        return result
+
     def call(self, step, ctx, timeout):
         req = step["request"]
         method = str(req.get("method", "GET")).upper()

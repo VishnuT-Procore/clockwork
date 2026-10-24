@@ -142,6 +142,17 @@ class DatabricksConnector(Connector):
         except (urllib.error.URLError, OSError) as e:
             raise ConnectorError(f"can't reach databricks: {getattr(e, 'reason', e)}") from None
 
+    def ping(self, ctx, timeout):
+        me = self._api("GET", "/api/2.0/preview/scim/v2/Me", timeout=timeout.total_seconds())
+        metrics = {"user": me.get("userName") or me.get("displayName")}
+        message = f"signed in to {self._host()} as {metrics['user']}"
+        if self.settings.get("warehouse_id"):
+            wh = self._api("GET", f"/api/2.0/sql/warehouses/{self.setting('warehouse_id')}",
+                           timeout=timeout.total_seconds())
+            metrics.update(warehouse=wh.get("name"), warehouse_state=wh.get("state"))
+            message += f"; warehouse {wh.get('name')!r} is {wh.get('state')}"
+        return StepResult(True, metrics, message)
+
     # -- steps --
     def call(self, step, ctx, timeout):
         deadline = time.monotonic() + timeout.total_seconds()
