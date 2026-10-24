@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import live
+from . import connector_test, live
 from ._compat import LEGACY_HEADER_VALUE, env
 from .config import TrainConfig
 from .timetable import NoServiceError, format_duration
@@ -141,7 +141,8 @@ class App:
                 "changes_command": bool(self.cfg.changes and self.cfg.changes.command),
                 "live_probe": bool(self.cfg.live_version_command),
                 "track_versions_by": self.cfg.track_versions_by,
-                "changes_head": self.cfg.changes.head if self.cfg.changes else None}
+                "changes_head": self.cfg.changes.head if self.cfg.changes else None,
+                "connectors": len(self.cfg.connectors)}
 
     def timetable_view(self) -> dict:
         try:
@@ -191,6 +192,33 @@ class App:
             raise ApiError(HTTPStatus.NOT_FOUND, "set train.changes.head (e.g. main) to see what isn't live yet")
         result = dict(self.preview(head))
         result["head"] = head
+        return result
+
+    # ---- connection tests (/test_connection.html) ---------------------------
+
+    def connectors_view(self) -> dict:
+        return {"train": self.cfg.name, "platforms": [p.name for p in self.cfg.platforms],
+                "connectors": connector_test.inventory(self.cfg)}
+
+    def connector_ping(self, body: dict, user: str) -> dict:
+        try:
+            result = connector_test.ping(self.cfg, str(body.get("connector") or ""))
+        except connector_test.ConnectorTestError as e:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(e))
+        self._audit(user, "connector_ping", "connectors", connector=result["connector"], ok=result["ok"])
+        return result
+
+    def connector_test(self, body: dict, user: str) -> dict:
+        try:
+            result = connector_test.run_test(
+                self.cfg, str(body.get("connector") or ""), step=body.get("step") or None,
+                platform=body.get("platform") or None, version=body.get("version") or None,
+                previous_version=body.get("previous_version") or None, values=body.get("values") or None,
+                for_real=bool(body.get("for_real")), runner=self.runner, user=user)
+        except connector_test.ConnectorTestError as e:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(e))
+        self._audit(user, "connector_test", "connectors", connector=result["connector"], step=result["step"],
+                    platform=result["platform"], for_real=bool(body.get("for_real")), passed=result["passed"])
         return result
 
     def _summary(self, st: dict) -> dict:
@@ -397,6 +425,11 @@ def make_handler(app: App):
             elif url.path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, (STATIC_DIR / "index.html").read_bytes(),
                            "text/html; charset=utf-8")
+            elif url.path in ("/test_connection.html", "/test_connection"):
+                self._send(HTTPStatus.OK, (STATIC_DIR / "test_connection.html").read_bytes(),
+                           "text/html; charset=utf-8")
+            elif url.path == "/api/connectors":
+                self._api(app.connectors_view)
             elif url.path == "/api/config":
                 self._api(app.config_view)
             elif url.path in ("/api/timetable", "/api/plan"):
@@ -426,6 +459,7 @@ def make_handler(app: App):
                 "/api/departures/depart": app.depart, "/api/departures/resume": app.resume,
                 "/api/departures/brake": app.brake,
                 "/api/departures/clear-signal": app.clear_signal,
+                "/api/connectors/ping": app.connector_ping, "/api/connectors/test": app.connector_test,
                 # Pre-rename paths.
                 "/api/runs/start": app.depart, "/api/runs/resume": app.resume,
                 "/api/runs/abort": app.brake, "/api/runs/approve": app.clear_signal,

@@ -15,6 +15,11 @@ All notable changes to this project are documented here. The format follows
   it ends, with `{status}`. Their metrics are available to platform steps and to commands
   as `{steps.<name>.<metric>}`; `deploy_command` and the other commands now fill those
   in too. The UI shows them as "Departure steps".
+- **Test connections page:** `/test_connection.html` on the web UI checks each connector's
+  credentials and network (Jira, Databricks, Postgres, Prometheus, HTTP) and runs any
+  step's call once, showing its metrics and `expect` results. Steps that change things
+  only run with *for real*, and every test is audited. The CLI gains `connectors ping`
+  and `connectors test --value step.metric=value`.
 - **`enabled:` on steps** (default `true`): switch a step off, e.g. the change approval,
   with `enabled: false` or from the environment with `enabled: ${REQUIRE_APPROVAL:-true}`.
   A disabled step is shown as *skipped (disabled)*. A skipped `before` step runs when a

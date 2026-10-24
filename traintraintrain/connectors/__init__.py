@@ -161,6 +161,11 @@ class Connector:
     def call(self, step: dict, ctx: Context, timeout: timedelta) -> StepResult:
         raise NotImplementedError
 
+    def ping(self, ctx: Context, timeout: timedelta) -> StepResult | None:
+        """A quick read-only check that the credentials and network work (who am I, server
+        version). None: this type has no such check, so test one of its steps instead."""
+        return None
+
     def safe_call(self, step: dict, ctx: Context, timeout: timedelta) -> StepResult:
         """`call`, but every problem (a missing env var, a crash) becomes a failed result."""
         try:

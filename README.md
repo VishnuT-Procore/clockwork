@@ -79,7 +79,8 @@ A fuller one is in [`examples/train.yaml`](https://github.com/VishnuT-Procore/tr
 - **Drivers:** one program of yours performs every step through a JSON contract.
   [Driver contract](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/driver-contract.md)
 - **Web UI and Slack:** dispatch, clear signals, pull the brake, retry, and get one
-  live-updating Slack message per train.
+  live-updating Slack message per train. `/test_connection.html` checks every connector
+  (Jira, Databricks, …) from the browser.
   [Web UI and Slack](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/web-ui-and-slack.md)
 - **Resumable, with files or Postgres:** survives crashes and restarts.
   [Storage](https://github.com/VishnuT-Procore/traintraintrain/blob/main/docs/storage.md)

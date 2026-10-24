@@ -45,6 +45,12 @@ class PrometheusConnector(Connector):
         if not isinstance(step.get("query"), str) or not step["query"].strip():
             raise ConnectorError("a prometheus step needs a `query`")
 
+    def ping(self, ctx, timeout):
+        result = self.call({"query": "vector(1)", "as": "up"}, ctx, timeout)
+        if result.ok:
+            result.message = f"{self.setting('url')} answers queries"
+        return result
+
     def call(self, step, ctx, timeout):
         name = str(step.get("as") or "value")
         query = render(step["query"], ctx)

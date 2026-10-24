@@ -330,13 +330,33 @@ step uses this type.
 
 ## Checking connectors
 
+**In the browser:** open **`/test_connection.html`** on the web UI (e.g.
+http://127.0.0.1:8080/test_connection.html, also linked from the Timetable page). For
+each connector:
+- **Test connection** checks the credentials and network, read-only: who you're signed
+  in as for Jira and Databricks (and the warehouse's state), user and server version for
+  Postgres, whether Prometheus answers queries, whether an HTTP base URL is reachable.
+- **Run step**, for every step that uses the connector: runs that step's call once and
+  shows the metrics and which `expect` rules pass. You can pick the platform and version,
+  and fill in values from earlier steps, e.g. `change.key` = `CHG-42` to try the Jira
+  approval check on a real ticket.
+- **Steps that could change something** (creating tickets, comments, HTTP POSTs,
+  commands) only run when you tick **for real**. Driver steps are sent with
+  `dry_run: true` unless you do.
+- Every test is recorded in the audit log with who ran it. The page uses the same
+  access token as the rest of the UI.
+
+**From the command line:**
+
 ```bash
 traintraintrain connectors list                                  # what's declared, and which steps use it
+traintraintrain connectors ping jira                             # check credentials and network
 traintraintrain connectors test payments-db --platform eu-west-1  # run the step's call, show metrics and rules
+traintraintrain connectors test jira --step approved --value change.key=CHG-42
 traintraintrain connectors test deployer --step deploy --for-real
 ```
-`connectors test` only runs calls that can't change anything (SQL, Prometheus, HTTP GET)
-unless you add `--for-real`. Driver steps are sent with `dry_run: true`.
+`connectors test` only runs calls that can't change anything (SQL, Prometheus, Jira
+searches, HTTP GET) unless you add `--for-real`. One call is made, waiting at most 60s.
 
 ## Writing your own connector type (plugins)
 

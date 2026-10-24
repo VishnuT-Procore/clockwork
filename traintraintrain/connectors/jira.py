@@ -163,6 +163,12 @@ class JiraConnector(Connector):
         except (urllib.error.URLError, OSError) as e:
             raise ConnectorError(f"can't reach jira: {getattr(e, 'reason', e)}") from None
 
+    def ping(self, ctx, timeout):
+        me = self._api("GET", "/rest/api/2/myself", timeout=timeout.total_seconds())
+        user = me.get("displayName") or me.get("name") or me.get("emailAddress")
+        return StepResult(True, {"user": user, "deployment": "cloud" if self._cloud() else "data center"},
+                          f"signed in to {self._base()} as {user}")
+
     # -- actions --
     def call(self, step, ctx, timeout):
         s = {k: render(v, ctx) for k, v in step.items()}
