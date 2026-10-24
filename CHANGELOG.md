@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`stop_if:` on steps:** rules that end a step at once, without waiting out `until`.
+  With `stop_if: ["approval == 'declined'"]`, a declined Jira approval stops the train
+  immediately; resuming raises a new change request. The test connections page shows
+  when a step would stop the train.
 - **Jira Service Management connector** (`type: jira`, Cloud or Data Center): `search`
   (JQL count, e.g. no open P1 incidents), `issue`, `approval`, `create` (a service desk
   request or a Jira issue), `transition` and `comment`.

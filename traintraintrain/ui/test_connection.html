@@ -124,7 +124,7 @@ function resultHtml(r, kind) {
   const good = kind === "ping" ? r.ok : r.passed;
   const head = kind === "ping"
     ? `<span class="${good ? "ok" : "no"}">${good ? "Connected" : "Failed"}</span>`
-    : `<span class="${good ? "ok" : "no"}">${good ? "Step would pass" : "Step would fail"}</span>${
+    : `<span class="${good ? "ok" : "no"}">${good ? "Step would pass" : r.stopped ? "Step would stop the train" : "Step would fail"}</span>${
         r.dry_run ? ` <span class="chip">dry run</span>` : ""} <span class="note">on ${esc(r.platform)}${r.version ? " · version " + esc(r.version) : ""}</span>`;
   const byMetric = Object.fromEntries((r.checks || []).map((c) => [c.metric, c]));
   const rows = Object.entries(r.metrics || {}).map(([k, v]) => {
@@ -135,7 +135,8 @@ function resultHtml(r, kind) {
   const missing = (r.checks || []).filter((c) => !(c.metric in (r.metrics || {})))
     .map((c) => `<tr><td>${esc(c.metric)}</td><td><span class="no">✗ ${esc(c.rule)}</span> <span class="note">${esc(c.why)}</span></td></tr>`).join("");
   const log = r.log ? `<details><summary class="note">Raw reply / log</summary><pre>${esc(r.log)}</pre></details>` : "";
-  return `<div class="result ${good ? "good" : "bad"}">${head}<div class="msg">${esc(r.message)}</div>${
+  const stop = r.stopped ? `<div class="msg no">Stopped: ${esc(r.stopped)}</div>` : "";
+  return `<div class="result ${good ? "good" : "bad"}">${head}<div class="msg">${esc(r.message)}</div>${stop}${
     rows || missing ? `<table>${rows}${missing}</table>` : ""}${log}</div>`;
 }
 
@@ -154,7 +155,8 @@ function stepHtml(c, s, ci, si, platforms) {
     `<label>${esc(n)}<input type="text" id="${id}_n${i}" data-key="${esc(n)}" placeholder="from an earlier step" autocomplete="off"></label>`).join("");
   return `<div class="step">
     <div class="top"><span class="sname">${esc(s.name)}</span><span class="where">${esc(s.where)}</span>${badges}</div>
-    ${s.expect.length ? `<div class="rules">${s.expect.map((e) => `<span class="rule">${esc(e)}</span>`).join("")}</div>` : ""}
+    ${s.expect.length || (s.stop_if || []).length ? `<div class="rules">${s.expect.map((e) => `<span class="rule">${esc(e)}</span>`).join("")}${
+      (s.stop_if || []).map((e) => `<span class="rule">stop if ${esc(e)}</span>`).join("")}</div>` : ""}
     <div class="controls">
       ${platformSel}
       <label>Version<input type="text" id="${id}_v" placeholder="default: what's live" autocomplete="off"></label>

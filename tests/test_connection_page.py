@@ -43,7 +43,7 @@ def make(tmp_path, url):
         },
         "train": {"name": "cde", "deploy_command": "true", "state_dir": str(tmp_path / "state"),
                   "before": [{"name": "approved", "use": "jira", "action": "approval", "key": "{steps.change.key}",
-                              "expect": ["approval == 'approved'"]}],
+                              "expect": ["approval == 'approved'"], "stop_if": ["approval == 'declined'"]}],
                   "steps": [{"name": "incidents", "use": "jira", "action": "search", "jql": "labels = {platform}",
                              "expect": ["count == 0"]},
                             "deploy",
@@ -89,6 +89,7 @@ def test_the_page_lists_connectors_and_their_steps(ui):
     assert by["jira"]["can_ping"] and by["lake"]["can_ping"] and not by["script"]["can_ping"]
     steps = {s["name"]: s for s in by["jira"]["steps"]}
     assert steps["approved"]["where"] == "before departing" and steps["approved"]["needs"] == ["change.key"]
+    assert steps["approved"]["stop_if"] == ["approval == 'declined'"]
     assert steps["incidents"]["read_only"] and not steps["note"]["read_only"]
     assert steps["incidents"]["platforms"] == ["p1", "p2"] and "pat" not in json.dumps(data)
     assert call(base, "/api/config")[1]["connectors"] == 3
@@ -117,7 +118,12 @@ def test_running_steps(ui):
     assert not r["ok"] and "no issue key" in r["message"]
     code, r = call(base, "/api/connectors/test", {"connector": "jira", "step": "approved",
                                                   "values": {"change.key": "CHG-7"}})
-    assert r["ok"] and r["metrics"]["approval"] == "pending" and not r["passed"]
+    assert r["ok"] and r["metrics"]["approval"] == "pending" and not r["passed"] and r["stopped"] is None
+    services.routes[("GET", "/rest/servicedeskapi/request/CHG-9/approval")] = \
+        lambda q: (200, {"values": [{"name": "CAB", "finalDecision": "declined"}]})
+    code, r = call(base, "/api/connectors/test", {"connector": "jira", "step": "approved",
+                                                  "values": {"change.key": "CHG-9"}})
+    assert not r["passed"] and r["stopped"] == "approval is 'declined' (stop_if: approval == 'declined')"
     # Steps that change things need for_real.
     code, r = call(base, "/api/connectors/test", {"connector": "jira", "step": "note"})
     assert code == 400 and "for-real" in r["error"]

@@ -708,6 +708,7 @@ function stepsList(steps) {
       .map((c) => `<span class="why">${esc(c.why)}</span>`).join("");
     const meta = [s.connector ? esc(s.connector) : "",
       s.until ? "until " + esc(s.until) : "", s.hold ? "hold " + esc(s.hold) : "",
+      (s.stop_if || []).length ? "stop if " + s.stop_if.map(esc).join(", ") : "",
       s.attempts > 1 ? `${s.attempts} tries` : "", s.on_fail === "warn" ? "warn only" : "",
       s.enabled === false ? "disabled" : ""].filter(Boolean).join(" · ");
     const pendingRules = !s.metrics && (s.expect || []).length

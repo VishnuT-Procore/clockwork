@@ -50,7 +50,8 @@ def inventory(cfg) -> list[dict]:
         for where, platform, s in steps_using(cfg, name):
             platforms = [q.name for q in cfg.platforms if any(t is s for t in q.steps)] or [platform.name]
             steps.append({"name": s.name, "where": where, "read_only": c.step_is_read_only(s.settings),
-                          "expect": [r.text for r in s.expect], "platforms": platforms,
+                          "expect": [r.text for r in s.expect], "stop_if": [r.text for r in s.stop_if],
+                          "platforms": platforms,
                           "needs": sorted(_step_refs(s.settings)), "enabled": s.enabled})
         out.append({"name": name, "type": c.type_name, "settings": c.describe().split(" ", 1)[-1].strip(),
                     "can_ping": type(c).ping is not connectors.Connector.ping, "steps": steps})
@@ -141,7 +142,9 @@ def run_test(cfg, name: str, step: str | None = None, platform: str | None = Non
         runner=runner or shell_runner)
     result = connector.safe_call(the_step.settings, ctx, min(the_step.timeout, TEST_TIMEOUT))
     results = checks.evaluate(the_step.expect, result.metrics) if result.ok else []
+    stopped = checks.stop_reason(the_step.stop_if, result.metrics) if result.ok else None
     return {"connector": name, "type": connector.type_name, "step": the_step.name, "platform": target.name,
             "version": ctx.version, "dry_run": ctx.dry_run, "read_only": read_only, "ok": result.ok,
-            "passed": result.ok and all(r.ok for r in results), "message": result.message,
+            "passed": result.ok and not stopped and all(r.ok for r in results), "stopped": stopped,
+            "message": result.message,
             "metrics": result.metrics, "checks": [r.as_dict() for r in results], "log": result.log}
